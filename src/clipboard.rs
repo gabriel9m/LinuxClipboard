@@ -37,12 +37,28 @@ impl ClipboardController {
         clipboard: &impl ClipboardPort,
         app: &mut ClipboardHistoryApp,
     ) -> io::Result<CaptureOutcome> {
-        if self.ignore_next_update {
-            self.ignore_next_update = false;
+        if self.consume_self_update() {
             return Ok(CaptureOutcome::IgnoredSelfUpdate);
         }
 
-        match clipboard.read()? {
+        self.capture_external_snapshot(clipboard.read()?, app)
+    }
+
+    pub fn consume_self_update(&mut self) -> bool {
+        if self.ignore_next_update {
+            self.ignore_next_update = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn capture_external_snapshot(
+        &mut self,
+        snapshot: ClipboardSnapshot,
+        app: &mut ClipboardHistoryApp,
+    ) -> io::Result<CaptureOutcome> {
+        match snapshot {
             ClipboardSnapshot::Text(text) => {
                 let Some(item) = HistoryItem::text(text) else {
                     return Ok(CaptureOutcome::IgnoredInvalidText);
@@ -266,6 +282,34 @@ mod tests {
         assert_eq!(app.history().items().len(), 1);
         assert_eq!(clipboard.read_count.get(), 0);
         assert!(!controller.will_ignore_next_update());
+    }
+
+    #[test]
+    fn consumes_self_update_before_async_clipboard_read() {
+        let mut controller = ClipboardController::new();
+        let selected_item = HistoryItem::text("selected").expect("valid text item");
+        let mut clipboard = FakeClipboard::new(ClipboardSnapshot::Text("selected".to_string()));
+
+        controller
+            .write_from_selection(&mut clipboard, &selected_item)
+            .expect("write selection");
+
+        assert!(controller.consume_self_update());
+        assert!(!controller.consume_self_update());
+        assert_eq!(clipboard.read_count.get(), 0);
+    }
+
+    #[test]
+    fn captures_external_snapshot_that_was_read_asynchronously() {
+        let (_temp_dir, mut app) = app_in_temp_dir();
+        let mut controller = ClipboardController::new();
+
+        let outcome = controller
+            .capture_external_snapshot(ClipboardSnapshot::Text("async text".to_string()), &mut app)
+            .expect("capture async snapshot");
+
+        assert_eq!(outcome, CaptureOutcome::Captured);
+        assert_eq!(app.history().items()[0].preview, "async text");
     }
 
     #[test]

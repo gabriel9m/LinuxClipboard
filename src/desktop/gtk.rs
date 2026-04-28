@@ -1,5 +1,5 @@
 use crate::app::ClipboardHistoryApp;
-use crate::clipboard::{ClipboardController, ClipboardPort, ClipboardSnapshot};
+use crate::clipboard::{CaptureOutcome, ClipboardController, ClipboardPort, ClipboardSnapshot};
 use crate::desktop::paths;
 use crate::domain::{ClipboardContent, HistoryItem};
 use crate::paste::{PastePort, SelectionController, SelectionOutcome, SelectionSource};
@@ -17,11 +17,23 @@ pub fn run_application() {
 
     app.connect_activate(|app| {
         let desktop_paths = paths::default_paths();
-        let history_app = ClipboardHistoryApp::load_with_paths(
+        let history_app = Rc::new(RefCell::new(ClipboardHistoryApp::load_with_paths(
             &desktop_paths.history_path,
             &desktop_paths.images_dir,
+        )));
+        let clipboard_controller = Rc::new(RefCell::new(ClipboardController::new()));
+
+        if let Err(error) =
+            start_text_clipboard_monitor(Rc::clone(&history_app), Rc::clone(&clipboard_controller))
+        {
+            eprintln!("clipboard monitor unavailable: {error}");
+        }
+
+        let popup = GtkPopup::new(
+            app,
+            history_app.borrow().history().items().to_vec(),
+            Rc::clone(&clipboard_controller),
         );
-        let popup = GtkPopup::new(app, history_app.history().items().to_vec());
 
         popup.show();
     });
@@ -35,10 +47,14 @@ pub struct GtkPopup {
 }
 
 impl GtkPopup {
-    pub fn new(app: &gtk4::Application, items: Vec<HistoryItem>) -> Self {
+    pub fn new(
+        app: &gtk4::Application,
+        items: Vec<HistoryItem>,
+        clipboard_controller: Rc<RefCell<ClipboardController>>,
+    ) -> Self {
         let state = Rc::new(RefCell::new(PopupState::from_items(&items)));
         let items = Rc::new(items);
-        let selection_runtime = GtkSelectionRuntime::new()
+        let selection_runtime = GtkSelectionRuntime::new(clipboard_controller)
             .map(|runtime| Rc::new(RefCell::new(runtime)))
             .map_err(|error| {
                 eprintln!("selection runtime unavailable: {error}");
@@ -171,16 +187,16 @@ fn handle_popup_action(
 
 #[derive(Debug)]
 struct GtkSelectionRuntime {
-    clipboard_controller: ClipboardController,
+    clipboard_controller: Rc<RefCell<ClipboardController>>,
     selection_controller: SelectionController,
     clipboard: GdkClipboardPort,
     paste: GtkPastePort,
 }
 
 impl GtkSelectionRuntime {
-    fn new() -> io::Result<Self> {
+    fn new(clipboard_controller: Rc<RefCell<ClipboardController>>) -> io::Result<Self> {
         Ok(Self {
-            clipboard_controller: ClipboardController::new(),
+            clipboard_controller,
             selection_controller: SelectionController::new(),
             clipboard: GdkClipboardPort::from_default_display()?,
             paste: GtkPastePort,
@@ -195,11 +211,52 @@ impl GtkSelectionRuntime {
         self.selection_controller.activate(
             source,
             item,
-            &mut self.clipboard_controller,
+            &mut *self.clipboard_controller.borrow_mut(),
             &mut self.clipboard,
             &mut self.paste,
         )
     }
+}
+
+fn start_text_clipboard_monitor(
+    app: Rc<RefCell<ClipboardHistoryApp>>,
+    clipboard_controller: Rc<RefCell<ClipboardController>>,
+) -> io::Result<()> {
+    let display = gdk::Display::default().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "no default GDK display available")
+    })?;
+    let clipboard = display.clipboard();
+
+    clipboard.connect_changed(move |clipboard| {
+        if clipboard_controller.borrow_mut().consume_self_update() {
+            eprintln!("clipboard change ignored: self update");
+            return;
+        }
+
+        let app = Rc::clone(&app);
+        let clipboard_controller = Rc::clone(&clipboard_controller);
+        clipboard.read_text_async(None::<&gtk4::gio::Cancellable>, move |result| {
+            let snapshot = match result {
+                Ok(Some(text)) => ClipboardSnapshot::Text(text.to_string()),
+                Ok(None) => ClipboardSnapshot::Unsupported,
+                Err(error) => {
+                    eprintln!("clipboard text read failed: {error}");
+                    ClipboardSnapshot::Unsupported
+                }
+            };
+
+            match clipboard_controller
+                .borrow_mut()
+                .capture_external_snapshot(snapshot, &mut app.borrow_mut())
+            {
+                Ok(CaptureOutcome::Captured) => eprintln!("clipboard text captured"),
+                Ok(outcome) => eprintln!("clipboard capture ignored: {outcome:?}"),
+                Err(error) => eprintln!("clipboard capture failed: {error}"),
+            }
+        });
+    });
+
+    Ok(())
 }
 
 #[derive(Debug)]
