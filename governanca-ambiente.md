@@ -152,8 +152,62 @@ Quando escolher:
 
 ### Recomendação
 
-- Para este projeto, a melhor opção inicial é **repositório privado + fine-grained personal access token limitado ao repositório**.
-- Se a configuração ficar simples e você preferir uma credencial ainda mais “por repositório”, a alternativa de SSH/deploy key também é válida.
+- Para este projeto, a opção adotada é **repositório privado + SSH deploy key limitada ao repositório**.
+- Motivo: o acesso necessário neste estágio é apenas `git push`/`git pull`, então a deploy key dá escopo menor do que uma credencial de conta.
+- A chave privada deve ficar fora do repositório, em `~/.ssh`, com permissão `600`.
+- A chave pública deve ser cadastrada no GitHub como deploy key do repositório, com permissão de escrita somente quando o agente precisar fazer `push`.
+
+### 3.1 Persistência segura da chave SSH entre sessões
+
+Problema:
+- novos chats ou novas execuções de CLI podem perder configuração local temporária, mas não devem exigir uma nova chave SSH a cada sessão;
+- a chave privada também não pode ser versionada nem copiada para arquivos do projeto.
+
+Decisão:
+- manter uma chave dedicada por repositório em `~/.ssh`;
+- configurar um alias persistente em `~/.ssh/config`;
+- apontar o remoto Git para esse alias;
+- nunca salvar chave privada no repositório.
+
+Configuração adotada neste host:
+
+```sshconfig
+Host github-linuxclipboard
+  HostName github.com
+  User git
+  IdentityFile /home/gabriel/.ssh/linuxclipboard_deploy_key
+  IdentitiesOnly yes
+  AddKeysToAgent yes
+```
+
+Remoto Git adotado:
+
+```bash
+git@github-linuxclipboard:gabriel9m/LinuxClipboard.git
+```
+
+Prós:
+- a mesma chave é reutilizada em novos chats/CLIs na mesma máquina;
+- o escopo continua limitado ao repositório;
+- não depende de token pessoal de conta;
+- a chave privada permanece fora do projeto e fora do Git.
+
+Contras:
+- se a máquina for perdida, a chave precisa ser revogada no GitHub;
+- se o projeto for clonado em outra máquina, será necessário copiar a chave com segurança ou criar uma nova deploy key;
+- deploy key é boa para Git, mas não substitui GitHub App ou token para automações avançadas da API.
+
+Procedimento de recuperação em novo clone na mesma máquina:
+
+```bash
+git remote set-url origin git@github-linuxclipboard:gabriel9m/LinuxClipboard.git
+ssh -T github-linuxclipboard
+```
+
+Regra de segurança:
+- a chave privada `/home/gabriel/.ssh/linuxclipboard_deploy_key` não deve ser enviada para chats, commits, tickets ou documentação;
+- apenas a chave pública `.pub` pode ser cadastrada no GitHub;
+- ao encerrar o projeto ou suspeitar de exposição, revogar a deploy key no GitHub e gerar outra.
 
 ## 4. Estratégia de branches e commits
 
