@@ -23,17 +23,20 @@ pub fn run_application() {
         )));
         let clipboard_controller = Rc::new(RefCell::new(ClipboardController::new()));
 
-        if let Err(error) =
-            start_text_clipboard_monitor(Rc::clone(&history_app), Rc::clone(&clipboard_controller))
-        {
-            eprintln!("clipboard monitor unavailable: {error}");
-        }
-
         let popup = GtkPopup::new(
             app,
             history_app.borrow().history().items().to_vec(),
             Rc::clone(&clipboard_controller),
         );
+        let popup_view = popup.view_handle();
+
+        if let Err(error) = start_text_clipboard_monitor(
+            Rc::clone(&history_app),
+            Rc::clone(&clipboard_controller),
+            popup_view,
+        ) {
+            eprintln!("clipboard monitor unavailable: {error}");
+        }
 
         popup.show();
     });
@@ -44,6 +47,7 @@ pub fn run_application() {
 #[derive(Debug)]
 pub struct GtkPopup {
     window: gtk4::ApplicationWindow,
+    view: GtkPopupView,
 }
 
 impl GtkPopup {
@@ -53,7 +57,7 @@ impl GtkPopup {
         clipboard_controller: Rc<RefCell<ClipboardController>>,
     ) -> Self {
         let state = Rc::new(RefCell::new(PopupState::from_items(&items)));
-        let items = Rc::new(items);
+        let items = Rc::new(RefCell::new(items));
         let selection_runtime = GtkSelectionRuntime::new(clipboard_controller)
             .map(|runtime| Rc::new(RefCell::new(runtime)))
             .map_err(|error| {
@@ -70,7 +74,7 @@ impl GtkPopup {
             .margin_end(12)
             .build();
 
-        render_popup(&list_box, &items, &state.borrow());
+        render_popup(&list_box, &items.borrow(), &state.borrow());
 
         let window = gtk4::ApplicationWindow::builder()
             .application(app)
@@ -103,19 +107,44 @@ impl GtkPopup {
                 };
 
                 let action = state.borrow_mut().handle_command(command);
-                handle_popup_action(&window, action, &items, selection_runtime.as_ref());
-                render_popup(&list_box, &items, &state.borrow());
+                handle_popup_action(&window, action, &items.borrow(), selection_runtime.as_ref());
+                render_popup(&list_box, &items.borrow(), &state.borrow());
 
                 gtk4::glib::Propagation::Stop
             });
         }
         window.add_controller(key_controller);
 
-        Self { window }
+        let view = GtkPopupView {
+            items,
+            state,
+            list_box,
+        };
+
+        Self { window, view }
     }
 
     pub fn show(&self) {
         self.window.present();
+    }
+
+    pub fn view_handle(&self) -> GtkPopupView {
+        self.view.clone()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GtkPopupView {
+    items: Rc<RefCell<Vec<HistoryItem>>>,
+    state: Rc<RefCell<PopupState>>,
+    list_box: gtk4::Box,
+}
+
+impl GtkPopupView {
+    pub fn refresh_from_history(&self, items: Vec<HistoryItem>) {
+        *self.items.borrow_mut() = items;
+        *self.state.borrow_mut() = PopupState::from_items(&self.items.borrow());
+        render_popup(&self.list_box, &self.items.borrow(), &self.state.borrow());
     }
 }
 
@@ -221,6 +250,7 @@ impl GtkSelectionRuntime {
 fn start_text_clipboard_monitor(
     app: Rc<RefCell<ClipboardHistoryApp>>,
     clipboard_controller: Rc<RefCell<ClipboardController>>,
+    popup_view: GtkPopupView,
 ) -> io::Result<()> {
     let display = gdk::Display::default().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "no default GDK display available")
@@ -235,6 +265,7 @@ fn start_text_clipboard_monitor(
 
         let app = Rc::clone(&app);
         let clipboard_controller = Rc::clone(&clipboard_controller);
+        let popup_view = popup_view.clone();
         clipboard.read_text_async(None::<&gtk4::gio::Cancellable>, move |result| {
             let snapshot = match result {
                 Ok(Some(text)) => ClipboardSnapshot::Text(text.to_string()),
@@ -249,7 +280,10 @@ fn start_text_clipboard_monitor(
                 .borrow_mut()
                 .capture_external_snapshot(snapshot, &mut app.borrow_mut())
             {
-                Ok(CaptureOutcome::Captured) => eprintln!("clipboard text captured"),
+                Ok(CaptureOutcome::Captured) => {
+                    eprintln!("clipboard text captured");
+                    popup_view.refresh_from_history(app.borrow().history().items().to_vec());
+                }
                 Ok(outcome) => eprintln!("clipboard capture ignored: {outcome:?}"),
                 Err(error) => eprintln!("clipboard capture failed: {error}"),
             }
