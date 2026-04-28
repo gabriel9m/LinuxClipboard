@@ -1,7 +1,8 @@
 use crate::app::ClipboardHistoryApp;
-use crate::clipboard::{ClipboardPort, ClipboardSnapshot};
+use crate::clipboard::{ClipboardController, ClipboardPort, ClipboardSnapshot};
 use crate::desktop::paths;
 use crate::domain::{ClipboardContent, HistoryItem};
+use crate::paste::{PastePort, SelectionController, SelectionOutcome, SelectionSource};
 use crate::ui::{PopupAction, PopupCommand, PopupState};
 use gtk4::gdk;
 use gtk4::prelude::*;
@@ -37,6 +38,13 @@ impl GtkPopup {
     pub fn new(app: &gtk4::Application, items: Vec<HistoryItem>) -> Self {
         let state = Rc::new(RefCell::new(PopupState::from_items(&items)));
         let items = Rc::new(items);
+        let selection_runtime = GtkSelectionRuntime::new()
+            .map(|runtime| Rc::new(RefCell::new(runtime)))
+            .map_err(|error| {
+                eprintln!("selection runtime unavailable: {error}");
+                error
+            })
+            .ok();
         let list_box = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
             .spacing(8)
@@ -63,6 +71,7 @@ impl GtkPopup {
             let items = Rc::clone(&items);
             let list_box = list_box.clone();
             let window = window.clone();
+            let selection_runtime = selection_runtime.clone();
 
             key_controller.connect_key_pressed(move |_, key, _, _| {
                 let command = match key {
@@ -78,7 +87,7 @@ impl GtkPopup {
                 };
 
                 let action = state.borrow_mut().handle_command(command);
-                handle_popup_action(&window, action);
+                handle_popup_action(&window, action, &items, selection_runtime.as_ref());
                 render_popup(&list_box, &items, &state.borrow());
 
                 gtk4::glib::Propagation::Stop
@@ -129,16 +138,78 @@ fn render_popup(container: &gtk4::Box, items: &[HistoryItem], state: &PopupState
     }
 }
 
-fn handle_popup_action(window: &gtk4::ApplicationWindow, action: PopupAction) {
+fn handle_popup_action(
+    window: &gtk4::ApplicationWindow,
+    action: PopupAction,
+    items: &[HistoryItem],
+    selection_runtime: Option<&Rc<RefCell<GtkSelectionRuntime>>>,
+) {
     match action {
         PopupAction::None => {}
         PopupAction::Activate { index, source } => {
-            eprintln!("popup activated index={index} source={source:?}");
+            let Some(item) = items.get(index) else {
+                eprintln!("popup activation ignored: index out of range: {index}");
+                return;
+            };
+
+            let Some(selection_runtime) = selection_runtime else {
+                eprintln!("popup activation ignored: selection runtime unavailable");
+                return;
+            };
+
+            match selection_runtime.borrow_mut().activate(source, item) {
+                Ok(outcome) => eprintln!("popup activation outcome: {outcome:?}"),
+                Err(error) => eprintln!("popup activation failed: {error}"),
+            }
             window.hide();
         }
         PopupAction::Cancel => {
             window.hide();
         }
+    }
+}
+
+#[derive(Debug)]
+struct GtkSelectionRuntime {
+    clipboard_controller: ClipboardController,
+    selection_controller: SelectionController,
+    clipboard: GdkClipboardPort,
+    paste: GtkPastePort,
+}
+
+impl GtkSelectionRuntime {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            clipboard_controller: ClipboardController::new(),
+            selection_controller: SelectionController::new(),
+            clipboard: GdkClipboardPort::from_default_display()?,
+            paste: GtkPastePort,
+        })
+    }
+
+    fn activate(
+        &mut self,
+        source: SelectionSource,
+        item: &HistoryItem,
+    ) -> io::Result<SelectionOutcome> {
+        self.selection_controller.activate(
+            source,
+            item,
+            &mut self.clipboard_controller,
+            &mut self.clipboard,
+            &mut self.paste,
+        )
+    }
+}
+
+#[derive(Debug)]
+struct GtkPastePort;
+
+impl PastePort for GtkPastePort {
+    fn try_paste(&mut self) -> io::Result<bool> {
+        // Automatic paste depends on compositor/session support and will be
+        // wired separately. Returning false preserves the manual paste fallback.
+        Ok(false)
     }
 }
 
