@@ -1,4 +1,4 @@
-use crate::domain::{History, HistoryItem};
+use crate::domain::{ClipboardImage, History, HistoryItem};
 use crate::storage;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -7,23 +7,37 @@ use std::path::{Path, PathBuf};
 pub struct ClipboardHistoryApp {
     history: History,
     history_path: PathBuf,
+    images_dir: PathBuf,
 }
 
 impl ClipboardHistoryApp {
     pub fn load(history_path: impl Into<PathBuf>) -> Self {
         let history_path = history_path.into();
         let history = storage::load_history(&history_path);
+        let images_dir = default_images_dir(&history_path);
 
         Self {
             history,
             history_path,
+            images_dir,
         }
     }
 
     pub fn new_empty(history_path: impl Into<PathBuf>) -> Self {
+        let history_path = history_path.into();
+        let images_dir = default_images_dir(&history_path);
+
+        Self::new_empty_with_paths(history_path, images_dir)
+    }
+
+    pub fn new_empty_with_paths(
+        history_path: impl Into<PathBuf>,
+        images_dir: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             history: History::new(),
             history_path: history_path.into(),
+            images_dir: images_dir.into(),
         }
     }
 
@@ -36,6 +50,13 @@ impl ClipboardHistoryApp {
         Ok(())
     }
 
+    pub fn add_image(&mut self, image: &ClipboardImage) -> io::Result<()> {
+        let image_path = storage::save_clipboard_image(&self.images_dir, image)?;
+        let item = HistoryItem::image(&image_path, &image_path);
+
+        self.add_item(item)
+    }
+
     pub fn history(&self) -> &History {
         &self.history
     }
@@ -43,12 +64,22 @@ impl ClipboardHistoryApp {
     pub fn history_path(&self) -> &Path {
         &self.history_path
     }
+
+    pub fn images_dir(&self) -> &Path {
+        &self.images_dir
+    }
+}
+
+fn default_images_dir(history_path: &Path) -> PathBuf {
+    history_path
+        .parent()
+        .map_or_else(|| PathBuf::from("images"), |parent| parent.join("images"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::HISTORY_LIMIT;
+    use crate::domain::{ClipboardContent, HISTORY_LIMIT, ImageFileExtension};
     use std::fs;
 
     fn text_item(value: &str) -> HistoryItem {
@@ -68,6 +99,7 @@ mod tests {
         assert_eq!(app.history().items().len(), 1);
         assert_eq!(app.history().items()[0].preview, "restored");
         assert_eq!(app.history_path(), history_path.as_path());
+        assert_eq!(app.images_dir(), temp_dir.path().join("images").as_path());
     }
 
     #[test]
@@ -127,5 +159,31 @@ mod tests {
                 .iter()
                 .all(|item| item.preview != old_preview_path.to_string_lossy())
         );
+    }
+
+    #[test]
+    fn adding_image_saves_file_and_persists_image_reference() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let history_path = temp_dir.path().join("history.json");
+        let images_dir = temp_dir.path().join("controlled-images");
+        let image =
+            ClipboardImage::new([1, 2, 3, 4], ImageFileExtension::Png).expect("valid image");
+        let mut app = ClipboardHistoryApp::new_empty_with_paths(&history_path, &images_dir);
+
+        app.add_image(&image).expect("add image");
+
+        let loaded = storage::load_history(&history_path);
+        assert_eq!(loaded.items().len(), 1);
+        assert!(
+            loaded.items()[0]
+                .preview
+                .starts_with(images_dir.to_str().unwrap())
+        );
+        let ClipboardContent::Image { path } = &loaded.items()[0].content else {
+            panic!("expected image item");
+        };
+        assert!(path.starts_with(&images_dir));
+        assert_eq!(path.extension().unwrap(), "png");
+        assert_eq!(fs::read(path).expect("read image"), image.bytes());
     }
 }

@@ -97,6 +97,47 @@ pub enum ClipboardContent {
     Image { path: PathBuf },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardImage {
+    bytes: Vec<u8>,
+    extension: ImageFileExtension,
+}
+
+impl ClipboardImage {
+    pub fn new(bytes: impl Into<Vec<u8>>, extension: ImageFileExtension) -> Option<Self> {
+        let bytes = bytes.into();
+
+        if bytes.is_empty() {
+            return None;
+        }
+
+        Some(Self { bytes, extension })
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn extension(&self) -> ImageFileExtension {
+        self.extension
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFileExtension {
+    Png,
+    Jpeg,
+}
+
+impl ImageFileExtension {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+        }
+    }
+}
+
 pub fn normalize_text(text: String) -> Option<String> {
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let trimmed = normalized.trim().to_string();
@@ -174,5 +215,18 @@ mod tests {
             }
         );
         assert_eq!(item.preview, "first");
+    }
+
+    #[test]
+    fn rejects_empty_image_payload() {
+        assert!(ClipboardImage::new(Vec::new(), ImageFileExtension::Png).is_none());
+    }
+
+    #[test]
+    fn accepts_non_empty_image_payload_with_safe_extension() {
+        let image = ClipboardImage::new([1, 2, 3], ImageFileExtension::Jpeg).expect("valid image");
+
+        assert_eq!(image.bytes(), &[1, 2, 3]);
+        assert_eq!(image.extension().as_str(), "jpg");
     }
 }

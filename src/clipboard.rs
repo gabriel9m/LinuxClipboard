@@ -1,5 +1,5 @@
 use crate::app::ClipboardHistoryApp;
-use crate::domain::{ClipboardContent, HistoryItem};
+use crate::domain::{ClipboardContent, ClipboardImage, HistoryItem};
 use std::io;
 
 pub trait ClipboardPort {
@@ -10,6 +10,7 @@ pub trait ClipboardPort {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipboardSnapshot {
     Text(String),
+    Image(ClipboardImage),
     Unsupported,
 }
 
@@ -50,6 +51,10 @@ impl ClipboardController {
                 app.add_item(item)?;
                 Ok(CaptureOutcome::Captured)
             }
+            ClipboardSnapshot::Image(image) => {
+                app.add_image(&image)?;
+                Ok(CaptureOutcome::Captured)
+            }
             ClipboardSnapshot::Unsupported => Ok(CaptureOutcome::IgnoredUnsupported),
         }
     }
@@ -73,7 +78,7 @@ impl ClipboardController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::ClipboardContent;
+    use crate::domain::{ClipboardContent, ImageFileExtension};
     use crate::storage;
     use std::cell::Cell;
     use std::path::PathBuf;
@@ -144,6 +149,49 @@ mod tests {
 
         assert_eq!(loaded.items().len(), 1);
         assert_eq!(loaded.items()[0].preview, "persisted");
+    }
+
+    #[test]
+    fn captures_image_from_clipboard_into_history() {
+        let (temp_dir, mut app) = app_in_temp_dir();
+        let image = ClipboardImage::new([1, 2, 3], ImageFileExtension::Png).expect("valid image");
+        let clipboard = FakeClipboard::new(ClipboardSnapshot::Image(image.clone()));
+        let mut controller = ClipboardController::new();
+
+        let outcome = controller
+            .capture_current(&clipboard, &mut app)
+            .expect("capture clipboard");
+
+        assert_eq!(outcome, CaptureOutcome::Captured);
+        assert_eq!(app.history().items().len(), 1);
+        let ClipboardContent::Image { path } = &app.history().items()[0].content else {
+            panic!("expected image item");
+        };
+        assert!(path.starts_with(temp_dir.path().join("images")));
+        assert_eq!(path.extension().unwrap(), "png");
+        assert_eq!(std::fs::read(path).expect("read image"), image.bytes());
+    }
+
+    #[test]
+    fn persists_captured_image_reference() {
+        let (temp_dir, mut app) = app_in_temp_dir();
+        let history_path = temp_dir.path().join("history.json");
+        let image =
+            ClipboardImage::new([255, 216, 255], ImageFileExtension::Jpeg).expect("valid image");
+        let clipboard = FakeClipboard::new(ClipboardSnapshot::Image(image));
+        let mut controller = ClipboardController::new();
+
+        controller
+            .capture_current(&clipboard, &mut app)
+            .expect("capture clipboard");
+        let loaded = storage::load_history(&history_path);
+
+        assert_eq!(loaded.items().len(), 1);
+        let ClipboardContent::Image { path } = &loaded.items()[0].content else {
+            panic!("expected image item");
+        };
+        assert!(path.exists());
+        assert_eq!(path.extension().unwrap(), "jpg");
     }
 
     #[test]

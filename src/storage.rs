@@ -1,7 +1,8 @@
-use crate::domain::{ClipboardContent, ClipboardKind, History, HistoryItem};
+use crate::domain::{ClipboardContent, ClipboardImage, ClipboardKind, History, HistoryItem};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 pub fn load_history(path: &Path) -> History {
     let Ok(contents) = fs::read_to_string(path) else {
@@ -44,6 +45,19 @@ pub fn cleanup_removed_image_files(items: &[HistoryItem]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn save_clipboard_image(images_dir: &Path, image: &ClipboardImage) -> io::Result<PathBuf> {
+    fs::create_dir_all(images_dir)?;
+
+    let file_name = format!("{}.{}", Uuid::new_v4(), image.extension().as_str());
+    let final_path = images_dir.join(file_name);
+    let temp_path = final_path.with_extension(format!("{}.tmp", image.extension().as_str()));
+
+    fs::write(&temp_path, image.bytes())?;
+    fs::rename(temp_path, &final_path)?;
+
+    Ok(final_path)
+}
+
 fn remove_file_if_exists(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -65,6 +79,7 @@ fn temporary_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ImageFileExtension;
 
     #[test]
     fn saves_and_loads_history_from_json() {
@@ -149,5 +164,33 @@ mod tests {
         let removed = vec![HistoryItem::image(&image_path, &preview_path)];
 
         cleanup_removed_image_files(&removed).expect("cleanup missing image files");
+    }
+
+    #[test]
+    fn saves_clipboard_image_inside_controlled_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let images_dir = temp_dir.path().join("images");
+        let image =
+            ClipboardImage::new([137, 80, 78, 71], ImageFileExtension::Png).expect("valid image");
+
+        let image_path = save_clipboard_image(&images_dir, &image).expect("save image");
+
+        assert!(image_path.starts_with(&images_dir));
+        assert_eq!(image_path.extension().unwrap(), "png");
+        assert_eq!(fs::read(&image_path).expect("read image"), image.bytes());
+    }
+
+    #[test]
+    fn saves_clipboard_image_atomically_without_leaving_temp_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let images_dir = temp_dir.path().join("images");
+        let image =
+            ClipboardImage::new([255, 216, 255], ImageFileExtension::Jpeg).expect("valid image");
+
+        let image_path = save_clipboard_image(&images_dir, &image).expect("save image");
+        let temp_path = image_path.with_extension("jpg.tmp");
+
+        assert!(image_path.exists());
+        assert!(!temp_path.exists());
     }
 }
