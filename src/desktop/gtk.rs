@@ -4,6 +4,25 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 use std::io;
 
+const APP_ID: &str = "io.github.gabriel9m.LinuxClipboard";
+
+pub fn run_application() {
+    let app = gtk4::Application::builder().application_id(APP_ID).build();
+
+    app.connect_activate(|app| {
+        let window = gtk4::ApplicationWindow::builder()
+            .application(app)
+            .title("LinuxClipboard")
+            .default_width(360)
+            .default_height(240)
+            .build();
+
+        window.hide();
+    });
+
+    app.run();
+}
+
 #[derive(Debug)]
 pub struct GdkClipboardPort {
     clipboard: gdk::Clipboard,

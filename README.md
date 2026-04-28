@@ -20,6 +20,7 @@ Para compilar a feature desktop:
 sudo apt-get update
 sudo apt-get install -y pkg-config libgtk-4-dev
 cargo check --features desktop-gtk
+cargo run --features desktop-gtk
 ```
 
 No Zorin OS 17.3, `libgtk-4-dev` fornece as bibliotecas nativas usadas pelo crate `gtk4`.
