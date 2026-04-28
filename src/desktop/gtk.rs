@@ -16,20 +16,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const APP_ID: &str = "io.github.gabriel9m.LinuxClipboard";
 const DEBUG_LOG_PATH: &str = "clipboard-history-debug.log";
 
+thread_local! {
+    static GTK_APP_STATE: RefCell<Option<GtkAppState>> = const { RefCell::new(None) };
+}
+
 pub fn run_application() {
     debug_log("run_application: starting GTK application");
     let app = gtk4::Application::builder().application_id(APP_ID).build();
-    let popup_holder: Rc<RefCell<Option<GtkPopup>>> = Rc::new(RefCell::new(None));
-    let hold_guard_holder: Rc<RefCell<Option<gtk4::gio::ApplicationHoldGuard>>> =
-        Rc::new(RefCell::new(None));
 
     app.connect_shutdown(|_| {
         debug_log("application: shutdown");
+        GTK_APP_STATE.with(|state| {
+            *state.borrow_mut() = None;
+        });
     });
 
-    app.connect_activate(move |app| {
+    app.connect_activate(|app| {
         debug_log("application: activate");
-        *hold_guard_holder.borrow_mut() = Some(app.hold());
+        let hold_guard = app.hold();
         debug_log("application: hold acquired");
         let desktop_paths = paths::default_paths();
         debug_log(&format!(
@@ -63,14 +67,23 @@ pub fn run_application() {
         }
 
         debug_log("popup: stored in holder");
-        *popup_holder.borrow_mut() = Some(popup);
-        if let Some(popup) = popup_holder.borrow().as_ref() {
-            popup.show();
-        }
+        popup.show();
+        GTK_APP_STATE.with(|state| {
+            *state.borrow_mut() = Some(GtkAppState {
+                _popup: popup,
+                _hold_guard: hold_guard,
+            });
+        });
     });
 
     let exit_code = app.run();
     debug_log(&format!("run_application: exited with {exit_code:?}"));
+}
+
+#[derive(Debug)]
+struct GtkAppState {
+    _popup: GtkPopup,
+    _hold_guard: gtk4::gio::ApplicationHoldGuard,
 }
 
 #[derive(Debug)]
