@@ -257,3 +257,28 @@ Esta etapa só está pronta quando:
 - a forma segura de usar GitHub foi escolhida;
 - a estratégia de branch e commit está clara;
 - o próximo passo é escrever a spec do produto.
+
+## 6. Dependências nativas de desktop
+
+A integração GTK4 deve permanecer opcional durante o desenvolvimento inicial.
+
+Decisão:
+- manter o crate `gtk4` atrás da feature Cargo `desktop-gtk`;
+- manter os testes de domínio, storage, clipboard, paste e UI pura sem dependências nativas;
+- validar GTK/GDK separadamente com `cargo check --features desktop-gtk`.
+
+Pacotes necessários no Zorin OS 17.3:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y pkg-config libgtk-4-dev
+```
+
+Motivo:
+- `pkg-config` é necessário para os crates `*-sys` encontrarem GObject/GTK;
+- `libgtk-4-dev` fornece headers e arquivos `.pc` do GTK4;
+- sem esses pacotes, `cargo check --features desktop-gtk` falha antes de compilar o adaptador do projeto.
+
+Regra:
+- não tornar GTK uma dependência obrigatória enquanto a lógica principal ainda estiver sendo estabilizada;
+- a feature padrão deve continuar compilando e testando sem bibliotecas de desktop.
