@@ -7,21 +7,40 @@ use crate::ui::{PopupAction, PopupCommand, PopupState};
 use gtk4::gdk;
 use gtk4::prelude::*;
 use std::cell::RefCell;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::Write;
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const APP_ID: &str = "io.github.gabriel9m.LinuxClipboard";
+const DEBUG_LOG_PATH: &str = "clipboard-history-debug.log";
 
 pub fn run_application() {
+    debug_log("run_application: starting GTK application");
     let app = gtk4::Application::builder().application_id(APP_ID).build();
     let popup_holder: Rc<RefCell<Option<GtkPopup>>> = Rc::new(RefCell::new(None));
 
+    app.connect_shutdown(|_| {
+        debug_log("application: shutdown");
+    });
+
     app.connect_activate(move |app| {
+        debug_log("application: activate");
         let desktop_paths = paths::default_paths();
+        debug_log(&format!(
+            "paths: history_path={} images_dir={}",
+            desktop_paths.history_path.display(),
+            desktop_paths.images_dir.display()
+        ));
         let history_app = Rc::new(RefCell::new(ClipboardHistoryApp::load_with_paths(
             &desktop_paths.history_path,
             &desktop_paths.images_dir,
         )));
+        debug_log(&format!(
+            "history: loaded {} item(s)",
+            history_app.borrow().history().items().len()
+        ));
         let clipboard_controller = Rc::new(RefCell::new(ClipboardController::new()));
 
         let popup = GtkPopup::new(
@@ -36,14 +55,16 @@ pub fn run_application() {
             Rc::clone(&clipboard_controller),
             popup_view,
         ) {
-            eprintln!("clipboard monitor unavailable: {error}");
+            log_error(&format!("clipboard monitor unavailable: {error}"));
         }
 
         popup.show();
+        debug_log("popup: shown and stored in holder");
         *popup_holder.borrow_mut() = Some(popup);
     });
 
-    app.run();
+    let exit_code = app.run();
+    debug_log(&format!("run_application: exited with {exit_code:?}"));
 }
 
 #[derive(Debug)]
@@ -58,6 +79,7 @@ impl GtkPopup {
         items: Vec<HistoryItem>,
         clipboard_controller: Rc<RefCell<ClipboardController>>,
     ) -> Self {
+        debug_log(&format!("popup: constructing with {} item(s)", items.len()));
         let state = Rc::new(RefCell::new(PopupState::from_items(&items)));
         let items = Rc::new(RefCell::new(items));
         let selection_runtime = GtkSelectionRuntime::new(clipboard_controller)
@@ -87,6 +109,17 @@ impl GtkPopup {
             .child(&list_box)
             .build();
 
+        window.connect_show(|_| {
+            debug_log("window: show signal");
+        });
+        window.connect_hide(|_| {
+            debug_log("window: hide signal");
+        });
+        window.connect_close_request(|_| {
+            debug_log("window: close-request signal");
+            gtk4::glib::Propagation::Proceed
+        });
+
         let key_controller = gtk4::EventControllerKey::new();
         {
             let state = Rc::clone(&state);
@@ -96,6 +129,7 @@ impl GtkPopup {
             let selection_runtime = selection_runtime.clone();
 
             key_controller.connect_key_pressed(move |_, key, _, _| {
+                debug_log(&format!("keyboard: key pressed {key:?}"));
                 let command = match key {
                     gdk::Key::Up => Some(PopupCommand::MoveUp),
                     gdk::Key::Down => Some(PopupCommand::MoveDown),
@@ -105,9 +139,11 @@ impl GtkPopup {
                 };
 
                 let Some(command) = command else {
+                    debug_log("keyboard: ignored key");
                     return gtk4::glib::Propagation::Proceed;
                 };
 
+                debug_log(&format!("popup: handling command {command:?}"));
                 let action = state.borrow_mut().handle_command(command);
                 handle_popup_action(&window, action, &items.borrow(), selection_runtime.as_ref());
                 render_popup(&list_box, &items.borrow(), &state.borrow());
@@ -127,6 +163,7 @@ impl GtkPopup {
     }
 
     pub fn show(&self) {
+        debug_log("popup: present requested");
         self.window.present();
     }
 
@@ -144,6 +181,7 @@ pub struct GtkPopupView {
 
 impl GtkPopupView {
     pub fn refresh_from_history(&self, items: Vec<HistoryItem>) {
+        debug_log(&format!("popup: refreshing with {} item(s)", items.len()));
         *self.items.borrow_mut() = items;
         *self.state.borrow_mut() = PopupState::from_items(&self.items.borrow());
         render_popup(&self.list_box, &self.items.borrow(), &self.state.borrow());
@@ -194,23 +232,30 @@ fn handle_popup_action(
     match action {
         PopupAction::None => {}
         PopupAction::Activate { index, source } => {
+            debug_log(&format!(
+                "popup: activate requested index={index} source={source:?}"
+            ));
             let Some(item) = items.get(index) else {
-                eprintln!("popup activation ignored: index out of range: {index}");
+                log_error(&format!(
+                    "popup activation ignored: index out of range: {index}"
+                ));
                 return;
             };
 
             let Some(selection_runtime) = selection_runtime else {
-                eprintln!("popup activation ignored: selection runtime unavailable");
+                log_error("popup activation ignored: selection runtime unavailable");
                 return;
             };
 
             match selection_runtime.borrow_mut().activate(source, item) {
-                Ok(outcome) => eprintln!("popup activation outcome: {outcome:?}"),
-                Err(error) => eprintln!("popup activation failed: {error}"),
+                Ok(outcome) => debug_log(&format!("popup activation outcome: {outcome:?}")),
+                Err(error) => log_error(&format!("popup activation failed: {error}")),
             }
+            debug_log("popup: hiding after activation");
             window.hide();
         }
         PopupAction::Cancel => {
+            debug_log("popup: cancel requested; hiding");
             window.hide();
         }
     }
@@ -226,6 +271,7 @@ struct GtkSelectionRuntime {
 
 impl GtkSelectionRuntime {
     fn new(clipboard_controller: Rc<RefCell<ClipboardController>>) -> io::Result<Self> {
+        debug_log("selection runtime: initializing");
         Ok(Self {
             clipboard_controller,
             selection_controller: SelectionController::new(),
@@ -239,6 +285,7 @@ impl GtkSelectionRuntime {
         source: SelectionSource,
         item: &HistoryItem,
     ) -> io::Result<SelectionOutcome> {
+        debug_log(&format!("selection runtime: activating source={source:?}"));
         self.selection_controller.activate(
             source,
             item,
@@ -254,14 +301,16 @@ fn start_text_clipboard_monitor(
     clipboard_controller: Rc<RefCell<ClipboardController>>,
     popup_view: GtkPopupView,
 ) -> io::Result<()> {
+    debug_log("clipboard monitor: starting");
     let display = gdk::Display::default().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "no default GDK display available")
     })?;
     let clipboard = display.clipboard();
 
     clipboard.connect_changed(move |clipboard| {
+        debug_log("clipboard monitor: changed signal");
         if clipboard_controller.borrow_mut().consume_self_update() {
-            eprintln!("clipboard change ignored: self update");
+            debug_log("clipboard monitor: ignored self update");
             return;
         }
 
@@ -273,7 +322,7 @@ fn start_text_clipboard_monitor(
                 Ok(Some(text)) => ClipboardSnapshot::Text(text.to_string()),
                 Ok(None) => ClipboardSnapshot::Unsupported,
                 Err(error) => {
-                    eprintln!("clipboard text read failed: {error}");
+                    log_error(&format!("clipboard text read failed: {error}"));
                     ClipboardSnapshot::Unsupported
                 }
             };
@@ -283,15 +332,16 @@ fn start_text_clipboard_monitor(
                 .capture_external_snapshot(snapshot, &mut app.borrow_mut())
             {
                 Ok(CaptureOutcome::Captured) => {
-                    eprintln!("clipboard text captured");
+                    debug_log("clipboard monitor: text captured");
                     popup_view.refresh_from_history(app.borrow().history().items().to_vec());
                 }
-                Ok(outcome) => eprintln!("clipboard capture ignored: {outcome:?}"),
-                Err(error) => eprintln!("clipboard capture failed: {error}"),
+                Ok(outcome) => debug_log(&format!("clipboard capture ignored: {outcome:?}")),
+                Err(error) => log_error(&format!("clipboard capture failed: {error}")),
             }
         });
     });
 
+    debug_log("clipboard monitor: connected");
     Ok(())
 }
 
@@ -303,6 +353,26 @@ impl PastePort for GtkPastePort {
         // Automatic paste depends on compositor/session support and will be
         // wired separately. Returning false preserves the manual paste fallback.
         Ok(false)
+    }
+}
+
+fn log_error(message: &str) {
+    eprintln!("{message}");
+    debug_log(&format!("ERROR: {message}"));
+}
+
+fn debug_log(message: &str) {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or_default();
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(DEBUG_LOG_PATH)
+    {
+        let _ = writeln!(file, "[{timestamp:.3}] {message}");
     }
 }
 
