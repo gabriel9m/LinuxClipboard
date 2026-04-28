@@ -1,0 +1,131 @@
+use crate::domain::{History, HistoryItem};
+use crate::storage;
+use std::io;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+pub struct ClipboardHistoryApp {
+    history: History,
+    history_path: PathBuf,
+}
+
+impl ClipboardHistoryApp {
+    pub fn load(history_path: impl Into<PathBuf>) -> Self {
+        let history_path = history_path.into();
+        let history = storage::load_history(&history_path);
+
+        Self {
+            history,
+            history_path,
+        }
+    }
+
+    pub fn new_empty(history_path: impl Into<PathBuf>) -> Self {
+        Self {
+            history: History::new(),
+            history_path: history_path.into(),
+        }
+    }
+
+    pub fn add_item(&mut self, item: HistoryItem) -> io::Result<()> {
+        let removed = self.history.push(item);
+
+        storage::cleanup_removed_image_files(&removed)?;
+        storage::save_history(&self.history_path, &self.history)?;
+
+        Ok(())
+    }
+
+    pub fn history(&self) -> &History {
+        &self.history
+    }
+
+    pub fn history_path(&self) -> &Path {
+        &self.history_path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::HISTORY_LIMIT;
+    use std::fs;
+
+    fn text_item(value: &str) -> HistoryItem {
+        HistoryItem::text(value).expect("valid text item")
+    }
+
+    #[test]
+    fn loads_existing_history_from_storage() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let history_path = temp_dir.path().join("history.json");
+        let mut existing = History::new();
+        existing.push(text_item("restored"));
+        storage::save_history(&history_path, &existing).expect("save existing history");
+
+        let app = ClipboardHistoryApp::load(&history_path);
+
+        assert_eq!(app.history().items().len(), 1);
+        assert_eq!(app.history().items()[0].preview, "restored");
+        assert_eq!(app.history_path(), history_path.as_path());
+    }
+
+    #[test]
+    fn adding_item_persists_history_to_json() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let history_path = temp_dir.path().join("history.json");
+        let mut app = ClipboardHistoryApp::new_empty(&history_path);
+
+        app.add_item(text_item("persist me")).expect("add item");
+        let loaded = storage::load_history(&history_path);
+
+        assert_eq!(loaded.items().len(), 1);
+        assert_eq!(loaded.items()[0].preview, "persist me");
+    }
+
+    #[test]
+    fn adding_item_applies_retention_before_persisting() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let history_path = temp_dir.path().join("history.json");
+        let mut app = ClipboardHistoryApp::new_empty(&history_path);
+
+        for index in 0..=HISTORY_LIMIT {
+            app.add_item(text_item(&format!("item {index}")))
+                .expect("add item");
+        }
+
+        let loaded = storage::load_history(&history_path);
+        assert_eq!(loaded.items().len(), HISTORY_LIMIT);
+        assert_eq!(loaded.items()[0].preview, "item 25");
+        assert_eq!(loaded.items().last().unwrap().preview, "item 1");
+    }
+
+    #[test]
+    fn adding_item_cleans_removed_image_files_when_retention_discards_them() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let history_path = temp_dir.path().join("history.json");
+        let old_image_path = temp_dir.path().join("old-image.png");
+        let old_preview_path = temp_dir.path().join("old-image-thumb.png");
+        fs::write(&old_image_path, "old image").expect("write old image");
+        fs::write(&old_preview_path, "old preview").expect("write old preview");
+        let mut app = ClipboardHistoryApp::new_empty(&history_path);
+
+        app.add_item(HistoryItem::image(&old_image_path, &old_preview_path))
+            .expect("add old image");
+        for index in 0..HISTORY_LIMIT {
+            app.add_item(text_item(&format!("new item {index}")))
+                .expect("add text item");
+        }
+
+        let loaded = storage::load_history(&history_path);
+        assert_eq!(loaded.items().len(), HISTORY_LIMIT);
+        assert!(!old_image_path.exists());
+        assert!(!old_preview_path.exists());
+        assert!(
+            loaded
+                .items()
+                .iter()
+                .all(|item| item.preview != old_preview_path.to_string_lossy())
+        );
+    }
+}
