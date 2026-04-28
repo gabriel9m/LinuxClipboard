@@ -1,4 +1,6 @@
+use crate::app::ClipboardHistoryApp;
 use crate::clipboard::{ClipboardPort, ClipboardSnapshot};
+use crate::desktop::paths;
 use crate::domain::{ClipboardContent, HistoryItem};
 use crate::ui::{PopupAction, PopupCommand, PopupState};
 use gtk4::gdk;
@@ -13,11 +15,12 @@ pub fn run_application() {
     let app = gtk4::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(|app| {
-        let sample_items = vec![
-            HistoryItem::text("GTK popup conectado ao estado puro").expect("sample text"),
-            HistoryItem::text("Setas navegam; Enter ativa; Esc fecha").expect("sample text"),
-        ];
-        let popup = GtkPopup::new(app, sample_items);
+        let desktop_paths = paths::default_paths();
+        let history_app = ClipboardHistoryApp::load_with_paths(
+            &desktop_paths.history_path,
+            &desktop_paths.images_dir,
+        );
+        let popup = GtkPopup::new(app, history_app.history().items().to_vec());
 
         popup.show();
     });

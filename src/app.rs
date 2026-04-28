@@ -13,13 +13,22 @@ pub struct ClipboardHistoryApp {
 impl ClipboardHistoryApp {
     pub fn load(history_path: impl Into<PathBuf>) -> Self {
         let history_path = history_path.into();
-        let history = storage::load_history(&history_path);
         let images_dir = default_images_dir(&history_path);
+
+        Self::load_with_paths(history_path, images_dir)
+    }
+
+    pub fn load_with_paths(
+        history_path: impl Into<PathBuf>,
+        images_dir: impl Into<PathBuf>,
+    ) -> Self {
+        let history_path = history_path.into();
+        let history = storage::load_history(&history_path);
 
         Self {
             history,
             history_path,
-            images_dir,
+            images_dir: images_dir.into(),
         }
     }
 
@@ -100,6 +109,23 @@ mod tests {
         assert_eq!(app.history().items()[0].preview, "restored");
         assert_eq!(app.history_path(), history_path.as_path());
         assert_eq!(app.images_dir(), temp_dir.path().join("images").as_path());
+    }
+
+    #[test]
+    fn loads_existing_history_with_explicit_images_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let history_path = temp_dir.path().join("history.json");
+        let images_dir = temp_dir.path().join("custom-images");
+        let mut existing = History::new();
+        existing.push(text_item("restored"));
+        storage::save_history(&history_path, &existing).expect("save existing history");
+
+        let app = ClipboardHistoryApp::load_with_paths(&history_path, &images_dir);
+
+        assert_eq!(app.history().items().len(), 1);
+        assert_eq!(app.history().items()[0].preview, "restored");
+        assert_eq!(app.history_path(), history_path.as_path());
+        assert_eq!(app.images_dir(), images_dir.as_path());
     }
 
     #[test]
