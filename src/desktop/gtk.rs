@@ -20,6 +20,8 @@ pub fn run_application() {
     debug_log("run_application: starting GTK application");
     let app = gtk4::Application::builder().application_id(APP_ID).build();
     let popup_holder: Rc<RefCell<Option<GtkPopup>>> = Rc::new(RefCell::new(None));
+    let hold_guard_holder: Rc<RefCell<Option<gtk4::gio::ApplicationHoldGuard>>> =
+        Rc::new(RefCell::new(None));
 
     app.connect_shutdown(|_| {
         debug_log("application: shutdown");
@@ -27,6 +29,8 @@ pub fn run_application() {
 
     app.connect_activate(move |app| {
         debug_log("application: activate");
+        *hold_guard_holder.borrow_mut() = Some(app.hold());
+        debug_log("application: hold acquired");
         let desktop_paths = paths::default_paths();
         debug_log(&format!(
             "paths: history_path={} images_dir={}",
@@ -58,9 +62,11 @@ pub fn run_application() {
             log_error(&format!("clipboard monitor unavailable: {error}"));
         }
 
-        popup.show();
-        debug_log("popup: shown and stored in holder");
+        debug_log("popup: stored in holder");
         *popup_holder.borrow_mut() = Some(popup);
+        if let Some(popup) = popup_holder.borrow().as_ref() {
+            popup.show();
+        }
     });
 
     let exit_code = app.run();
@@ -115,8 +121,11 @@ impl GtkPopup {
         window.connect_hide(|_| {
             debug_log("window: hide signal");
         });
-        window.connect_close_request(|_| {
+        let app_for_close = app.clone();
+        window.connect_close_request(move |_| {
             debug_log("window: close-request signal");
+            debug_log("application: quit after close-request");
+            app_for_close.quit();
             gtk4::glib::Propagation::Proceed
         });
 
