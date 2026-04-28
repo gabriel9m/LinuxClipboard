@@ -1,0 +1,16 @@
+# Rust
+target/
+
+# GTK / desktop build artifacts
+*.AppImage
+*.deb
+*.rpm
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Local scratch
+.codex
