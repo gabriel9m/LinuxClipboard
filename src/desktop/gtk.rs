@@ -14,8 +14,9 @@ const APP_ID: &str = "io.github.gabriel9m.LinuxClipboard";
 
 pub fn run_application() {
     let app = gtk4::Application::builder().application_id(APP_ID).build();
+    let popup_holder: Rc<RefCell<Option<GtkPopup>>> = Rc::new(RefCell::new(None));
 
-    app.connect_activate(|app| {
+    app.connect_activate(move |app| {
         let desktop_paths = paths::default_paths();
         let history_app = Rc::new(RefCell::new(ClipboardHistoryApp::load_with_paths(
             &desktop_paths.history_path,
@@ -39,6 +40,7 @@ pub fn run_application() {
         }
 
         popup.show();
+        *popup_holder.borrow_mut() = Some(popup);
     });
 
     app.run();
