@@ -656,7 +656,7 @@ impl AutoPasteBackend {
         let mut command = match self {
             Self::Ydotool => {
                 let mut command = Command::new("ydotool");
-                command.args(["key", "29:1", "47:1", "47:0", "29:0"]);
+                command.args(["key", "ctrl+v"]);
                 command
             }
             Self::Wtype => {

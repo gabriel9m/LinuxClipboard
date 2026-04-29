@@ -84,3 +84,9 @@ Ao ativar um item com clique ou `Enter`, o app sempre escreve o conteúdo seleci
 - Sem ferramenta compatível: mantém o fallback manual, ou seja, o item fica no clipboard e pode ser colado com `Ctrl+V`.
 
 No ambiente atual de desenvolvimento, a sessão é Wayland. Para auto-paste real no Wayland/GNOME, a opção mais provável é instalar e habilitar `ydotool`.
+
+Na versão `ydotool 0.1.8`, o comando usado para simular `Ctrl+V` é:
+
+```bash
+ydotool key ctrl+v
+```
