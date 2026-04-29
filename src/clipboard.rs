@@ -80,10 +80,21 @@ impl ClipboardController {
         clipboard: &mut impl ClipboardPort,
         item: &HistoryItem,
     ) -> io::Result<()> {
-        clipboard.write(&item.content)?;
         self.ignore_next_update = true;
+        if let Err(error) = clipboard.write(&item.content) {
+            self.ignore_next_update = false;
+            return Err(error);
+        }
 
         Ok(())
+    }
+
+    pub fn mark_next_update_as_self(&mut self) {
+        self.ignore_next_update = true;
+    }
+
+    pub fn clear_next_update_as_self(&mut self) {
+        self.ignore_next_update = false;
     }
 
     pub fn will_ignore_next_update(&self) -> bool {
@@ -125,6 +136,19 @@ mod tests {
         fn write(&mut self, content: &ClipboardContent) -> io::Result<()> {
             self.written.push(content.clone());
             Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingClipboard;
+
+    impl ClipboardPort for FailingClipboard {
+        fn read(&self) -> io::Result<ClipboardSnapshot> {
+            Ok(ClipboardSnapshot::Unsupported)
+        }
+
+        fn write(&mut self, _content: &ClipboardContent) -> io::Result<()> {
+            Err(io::Error::other("write failed"))
         }
     }
 
@@ -260,6 +284,18 @@ mod tests {
                 text: "selected".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn clears_self_update_marker_when_selection_write_fails() {
+        let selected_item = HistoryItem::text("selected").expect("valid text item");
+        let mut clipboard = FailingClipboard;
+        let mut controller = ClipboardController::new();
+
+        let result = controller.write_from_selection(&mut clipboard, &selected_item);
+
+        assert!(result.is_err());
+        assert!(!controller.will_ignore_next_update());
     }
 
     #[test]

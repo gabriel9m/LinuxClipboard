@@ -2,7 +2,7 @@ use crate::app::ClipboardHistoryApp;
 use crate::clipboard::{CaptureOutcome, ClipboardController, ClipboardPort, ClipboardSnapshot};
 use crate::desktop::paths;
 use crate::domain::{ClipboardContent, HistoryItem};
-use crate::paste::{PastePort, SelectionController, SelectionOutcome, SelectionSource};
+use crate::paste::{PastePort, SelectionOutcome, SelectionSource};
 use crate::ui::{PopupAction, PopupCommand, PopupState};
 use gtk4::gdk;
 use gtk4::prelude::*;
@@ -157,6 +157,7 @@ impl GtkPopup {
             let state = Rc::clone(&state);
             let items = Rc::clone(&items);
             let list_box = list_box.clone();
+            let scroll = scroll.clone();
             let window = window.clone();
             let selection_runtime = selection_runtime.clone();
 
@@ -180,6 +181,7 @@ impl GtkPopup {
                 handle_popup_action(&window, action, &items.borrow(), selection_runtime.as_ref());
                 render_popup(
                     &list_box,
+                    &scroll,
                     Rc::clone(&items),
                     Rc::clone(&state),
                     &window,
@@ -192,6 +194,7 @@ impl GtkPopup {
         window.add_controller(key_controller);
         render_popup(
             &list_box,
+            &scroll,
             Rc::clone(&items),
             Rc::clone(&state),
             &window,
@@ -202,6 +205,7 @@ impl GtkPopup {
             items,
             state,
             list_box,
+            scroll,
             window: window.clone(),
             selection_runtime,
         };
@@ -247,6 +251,7 @@ pub struct GtkPopupView {
     items: Rc<RefCell<Vec<HistoryItem>>>,
     state: Rc<RefCell<PopupState>>,
     list_box: gtk4::Box,
+    scroll: gtk4::ScrolledWindow,
     window: gtk4::ApplicationWindow,
     selection_runtime: Option<Rc<RefCell<GtkSelectionRuntime>>>,
 }
@@ -258,6 +263,7 @@ impl GtkPopupView {
         *self.state.borrow_mut() = PopupState::from_items(&self.items.borrow());
         render_popup(
             &self.list_box,
+            &self.scroll,
             Rc::clone(&self.items),
             Rc::clone(&self.state),
             &self.window,
@@ -268,6 +274,7 @@ impl GtkPopupView {
 
 fn render_popup(
     container: &gtk4::Box,
+    scroll: &gtk4::ScrolledWindow,
     items: Rc<RefCell<Vec<HistoryItem>>>,
     state: Rc<RefCell<PopupState>>,
     window: &gtk4::ApplicationWindow,
@@ -333,6 +340,39 @@ fn render_popup(
             row.grab_focus();
         }
     }
+
+    scroll_selected_row_into_view(
+        scroll,
+        state.borrow().selected_index(),
+        items.borrow().len(),
+    );
+}
+
+fn scroll_selected_row_into_view(
+    scroll: &gtk4::ScrolledWindow,
+    selected_index: Option<usize>,
+    item_count: usize,
+) {
+    let Some(selected_index) = selected_index else {
+        return;
+    };
+    let adjustment = scroll.vadjustment();
+
+    gtk4::glib::idle_add_local_once(move || {
+        let upper = adjustment.upper();
+        let page_size = adjustment.page_size();
+        if item_count <= 1 || upper <= page_size {
+            return;
+        }
+
+        let max_value = upper - page_size;
+        let last_index = item_count.saturating_sub(1).max(1) as f64;
+        let target = (selected_index as f64 / last_index) * max_value;
+        debug_log(&format!(
+            "popup: scroll selected index={selected_index} target={target:.2}"
+        ));
+        adjustment.set_value(target);
+    });
 }
 
 fn handle_popup_action(
@@ -376,7 +416,6 @@ fn handle_popup_action(
 #[derive(Debug)]
 struct GtkSelectionRuntime {
     clipboard_controller: Rc<RefCell<ClipboardController>>,
-    selection_controller: SelectionController,
     clipboard: GdkClipboardPort,
     paste: GtkPastePort,
 }
@@ -386,7 +425,6 @@ impl GtkSelectionRuntime {
         debug_log("selection runtime: initializing");
         Ok(Self {
             clipboard_controller,
-            selection_controller: SelectionController::new(),
             clipboard: GdkClipboardPort::from_default_display()?,
             paste: GtkPastePort,
         })
@@ -398,13 +436,21 @@ impl GtkSelectionRuntime {
         item: &HistoryItem,
     ) -> io::Result<SelectionOutcome> {
         debug_log(&format!("selection runtime: activating source={source:?}"));
-        self.selection_controller.activate(
-            source,
-            item,
-            &mut *self.clipboard_controller.borrow_mut(),
-            &mut self.clipboard,
-            &mut self.paste,
-        )
+        self.clipboard_controller
+            .borrow_mut()
+            .mark_next_update_as_self();
+        if let Err(error) = self.clipboard.write(&item.content) {
+            self.clipboard_controller
+                .borrow_mut()
+                .clear_next_update_as_self();
+            return Err(error);
+        }
+
+        if self.paste.try_paste()? {
+            Ok(SelectionOutcome::AutoPasted { source })
+        } else {
+            Ok(SelectionOutcome::ClipboardOnly { source })
+        }
     }
 }
 
