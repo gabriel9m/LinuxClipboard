@@ -118,6 +118,7 @@ fn ensure_gtk_app_state(app: &gtk4::Application) {
 
     let popup = GtkPopup::new(
         app,
+        Rc::clone(&history_app),
         history_app.borrow().history().items().to_vec(),
         Rc::clone(&clipboard_controller),
     );
@@ -270,7 +271,7 @@ fn dark_popup_css() -> &'static str {
             background: transparent;
         }
 
-        button.clipboard-row {
+        .clipboard-row {
             min-height: 42px;
             padding: 0;
             margin: 2px 4px;
@@ -281,19 +282,38 @@ fn dark_popup_css() -> &'static str {
             box-shadow: none;
         }
 
-        button.clipboard-row:hover {
+        .clipboard-row:hover {
             background: alpha(#44475a, 0.76);
             border-color: alpha(#f8f8f2, 0.10);
         }
 
-        button.clipboard-row:focus {
+        .clipboard-row.clipboard-row-selected {
+            background: alpha(#bd93f9, 0.20);
+            border-color: alpha(#bd93f9, 0.58);
+        }
+
+        button.clipboard-content-button,
+        button.clipboard-pin-button {
+            background: transparent;
+            border: 0;
+            box-shadow: none;
+            color: #f8f8f2;
+        }
+
+        button.clipboard-content-button:focus,
+        button.clipboard-pin-button:focus {
             outline: none;
             box-shadow: 0 0 0 2px alpha(#bd93f9, 0.52);
         }
 
-        button.clipboard-row.clipboard-row-selected {
-            background: alpha(#bd93f9, 0.20);
-            border-color: alpha(#bd93f9, 0.58);
+        button.clipboard-pin-button {
+            min-width: 38px;
+            padding: 0 10px;
+            color: alpha(#f8f8f2, 0.54);
+        }
+
+        button.clipboard-pin-button.clipboard-pin-active {
+            color: #ffb86c;
         }
 
         .clipboard-text-preview {
@@ -359,7 +379,7 @@ fn light_popup_css() -> &'static str {
             background: transparent;
         }
 
-        button.clipboard-row {
+        .clipboard-row {
             min-height: 42px;
             padding: 0;
             margin: 2px 4px;
@@ -370,19 +390,38 @@ fn light_popup_css() -> &'static str {
             box-shadow: none;
         }
 
-        button.clipboard-row:hover {
+        .clipboard-row:hover {
             background: alpha(#aacddc, 0.32);
             border-color: alpha(#81a6c6, 0.26);
         }
 
-        button.clipboard-row:focus {
+        .clipboard-row.clipboard-row-selected {
+            background: alpha(#81a6c6, 0.26);
+            border-color: alpha(#81a6c6, 0.60);
+        }
+
+        button.clipboard-content-button,
+        button.clipboard-pin-button {
+            background: transparent;
+            border: 0;
+            box-shadow: none;
+            color: #29475f;
+        }
+
+        button.clipboard-content-button:focus,
+        button.clipboard-pin-button:focus {
             outline: none;
             box-shadow: 0 0 0 2px alpha(#81a6c6, 0.40);
         }
 
-        button.clipboard-row.clipboard-row-selected {
-            background: alpha(#81a6c6, 0.26);
-            border-color: alpha(#81a6c6, 0.60);
+        button.clipboard-pin-button {
+            min-width: 38px;
+            padding: 0 10px;
+            color: alpha(#29475f, 0.44);
+        }
+
+        button.clipboard-pin-button.clipboard-pin-active {
+            color: #31536e;
         }
 
         .clipboard-text-preview {
@@ -417,6 +456,7 @@ pub struct GtkPopup {
 impl GtkPopup {
     pub fn new(
         app: &gtk4::Application,
+        history_app: Rc<RefCell<ClipboardHistoryApp>>,
         items: Vec<HistoryItem>,
         clipboard_controller: Rc<RefCell<ClipboardController>>,
     ) -> Self {
@@ -569,6 +609,7 @@ impl GtkPopup {
         render_popup(
             &list_box,
             &scroll,
+            Rc::clone(&history_app),
             Rc::clone(&items),
             Rc::clone(&state),
             &window,
@@ -578,6 +619,7 @@ impl GtkPopup {
         let view = GtkPopupView {
             items,
             state,
+            history_app,
             list_box,
             scroll,
             window: window.clone(),
@@ -637,6 +679,7 @@ fn schedule_window_diagnostics(window: &gtk4::ApplicationWindow) {
 pub struct GtkPopupView {
     items: Rc<RefCell<Vec<HistoryItem>>>,
     state: Rc<RefCell<PopupState>>,
+    history_app: Rc<RefCell<ClipboardHistoryApp>>,
     list_box: gtk4::Box,
     scroll: gtk4::ScrolledWindow,
     window: gtk4::ApplicationWindow,
@@ -651,6 +694,7 @@ impl GtkPopupView {
         render_popup(
             &self.list_box,
             &self.scroll,
+            Rc::clone(&self.history_app),
             Rc::clone(&self.items),
             Rc::clone(&self.state),
             &self.window,
@@ -662,6 +706,7 @@ impl GtkPopupView {
 fn render_popup(
     container: &gtk4::Box,
     scroll: &gtk4::ScrolledWindow,
+    history_app: Rc<RefCell<ClipboardHistoryApp>>,
     items: Rc<RefCell<Vec<HistoryItem>>>,
     state: Rc<RefCell<PopupState>>,
     window: &gtk4::ApplicationWindow,
@@ -690,33 +735,88 @@ fn render_popup(
 
     let mut selected_row = None;
 
-    for (index, item) in items.borrow().iter().enumerate() {
-        let content = row_content_for_item(item);
-        let row = gtk4::Button::builder()
-            .child(&content)
+    let item_count = items.borrow().len();
+    for index in 0..item_count {
+        let item = items.borrow()[index].clone();
+        let content = row_content_for_item(&item);
+        let content_button = gtk4::Button::builder().hexpand(true).build();
+        content_button.set_child(Some(&content));
+        content_button.set_focusable(false);
+        content_button.add_css_class("flat");
+        content_button.add_css_class("clipboard-content-button");
+
+        let pin_button = gtk4::Button::builder()
+            .label(if item.pinned { "📌" } else { "○" })
+            .tooltip_text(if item.pinned { "Desafixar" } else { "Fixar" })
+            .build();
+        pin_button.set_focusable(false);
+        pin_button.add_css_class("flat");
+        pin_button.add_css_class("clipboard-pin-button");
+        if item.pinned {
+            pin_button.add_css_class("clipboard-pin-active");
+        }
+
+        let row = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Horizontal)
+            .spacing(0)
             .hexpand(true)
             .build();
-        row.add_css_class("flat");
         row.add_css_class("clipboard-row");
+        row.append(&content_button);
+        row.append(&pin_button);
 
         let is_selected = state.borrow().selected_index() == Some(index);
         if is_selected {
             row.add_css_class("clipboard-row-selected");
         }
 
-        let window = window.clone();
+        let window_for_click = window.clone();
         let items_for_click = Rc::clone(&items);
         let state_for_click = Rc::clone(&state);
-        let selection_runtime = selection_runtime.cloned();
-        row.connect_clicked(move |_| {
+        let selection_runtime_for_click = selection_runtime.cloned();
+        content_button.connect_clicked(move |_| {
             debug_log(&format!("mouse: clicked row index={index}"));
             let action = state_for_click.borrow_mut().click_item(index);
             handle_popup_action(
-                &window,
+                &window_for_click,
                 action,
                 &items_for_click.borrow(),
-                selection_runtime.as_ref(),
+                selection_runtime_for_click.as_ref(),
             );
+        });
+
+        let item_id = item.id;
+        let container_for_pin = container.clone();
+        let scroll_for_pin = scroll.clone();
+        let history_app_for_pin = Rc::clone(&history_app);
+        let items_for_pin = Rc::clone(&items);
+        let state_for_pin = Rc::clone(&state);
+        let window_for_pin = window.clone();
+        let selection_runtime_for_pin = selection_runtime.cloned();
+        pin_button.connect_clicked(move |_| {
+            debug_log(&format!("pin: toggling item id={item_id}"));
+            let toggle_result = {
+                let mut app = history_app_for_pin.borrow_mut();
+                app.toggle_pin(item_id)
+            };
+
+            match toggle_result {
+                Ok(true) => {
+                    let updated_items = history_app_for_pin.borrow().history().items().to_vec();
+                    *items_for_pin.borrow_mut() = updated_items;
+                    render_popup(
+                        &container_for_pin,
+                        &scroll_for_pin,
+                        Rc::clone(&history_app_for_pin),
+                        Rc::clone(&items_for_pin),
+                        Rc::clone(&state_for_pin),
+                        &window_for_pin,
+                        selection_runtime_for_pin.as_ref(),
+                    );
+                }
+                Ok(false) => log_error(&format!("pin ignored: unknown item id={item_id}")),
+                Err(error) => log_error(&format!("pin toggle failed: {error}")),
+            }
         });
 
         container.append(&row);
@@ -931,6 +1031,7 @@ fn start_text_clipboard_monitor(
     let clipboard = display.clipboard();
     let poll_state = Rc::new(RefCell::new(ClipboardPollState::default()));
 
+    prime_clipboard_poll_state(clipboard.clone(), Rc::clone(&poll_state));
     start_clipboard_polling(
         clipboard.clone(),
         Rc::clone(&app),
@@ -995,6 +1096,21 @@ fn start_text_clipboard_monitor(
 struct ClipboardPollState {
     in_flight: bool,
     last_text: Option<String>,
+}
+
+fn prime_clipboard_poll_state(
+    clipboard: gdk::Clipboard,
+    poll_state: Rc<RefCell<ClipboardPollState>>,
+) {
+    poll_state.borrow_mut().in_flight = true;
+    clipboard.read_text_async(None::<&gtk4::gio::Cancellable>, move |result| {
+        let mut poll_state = poll_state.borrow_mut();
+        poll_state.in_flight = false;
+        if let Ok(Some(text)) = result {
+            debug_log("clipboard poll: primed initial text");
+            poll_state.last_text = Some(text.to_string());
+        }
+    });
 }
 
 fn start_clipboard_polling(

@@ -30,16 +30,30 @@ impl History {
         &self.items
     }
 
+    pub fn toggle_pin(&mut self, id: Uuid) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
+            return false;
+        };
+
+        item.pinned = !item.pinned;
+        true
+    }
+
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
     fn enforce_limit(&mut self) -> Vec<HistoryItem> {
-        if self.items.len() <= HISTORY_LIMIT {
-            return Vec::new();
+        let mut removed = Vec::new();
+
+        while self.items.len() > HISTORY_LIMIT {
+            let Some(index) = self.items.iter().rposition(|item| !item.pinned) else {
+                break;
+            };
+            removed.push(self.items.remove(index));
         }
 
-        self.items.split_off(HISTORY_LIMIT)
+        removed
     }
 }
 
@@ -54,6 +68,8 @@ pub struct HistoryItem {
     pub id: Uuid,
     pub kind: ClipboardKind,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub pinned: bool,
     pub preview: String,
     pub content: ClipboardContent,
 }
@@ -67,6 +83,7 @@ impl HistoryItem {
             id: Uuid::new_v4(),
             kind: ClipboardKind::Text,
             created_at: Utc::now(),
+            pinned: false,
             preview,
             content: ClipboardContent::Text { text },
         })
@@ -77,6 +94,7 @@ impl HistoryItem {
             id: Uuid::new_v4(),
             kind: ClipboardKind::Image,
             created_at: Utc::now(),
+            pinned: false,
             preview: preview.into().to_string_lossy().into_owned(),
             content: ClipboardContent::Image { path: path.into() },
         }
@@ -197,6 +215,38 @@ mod tests {
 
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].preview, "item 0");
+    }
+
+    #[test]
+    fn pinned_items_are_not_removed_when_limit_is_exceeded() {
+        let mut history = History::new();
+
+        history.push(text_item("pinned"));
+        let pinned_id = history.items()[0].id;
+        assert!(history.toggle_pin(pinned_id));
+
+        for index in 0..HISTORY_LIMIT {
+            history.push(text_item(&format!("item {index}")));
+        }
+
+        assert_eq!(history.items().len(), HISTORY_LIMIT);
+        assert!(history.items().iter().any(|item| item.preview == "pinned"));
+        assert!(history.items().iter().all(|item| item.preview != "item 0"));
+        assert!(
+            history
+                .items()
+                .iter()
+                .find(|item| item.preview == "pinned")
+                .expect("pinned item")
+                .pinned
+        );
+    }
+
+    #[test]
+    fn toggle_pin_returns_false_for_unknown_item() {
+        let mut history = History::new();
+
+        assert!(!history.toggle_pin(Uuid::new_v4()));
     }
 
     #[test]

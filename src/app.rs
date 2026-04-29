@@ -2,6 +2,7 @@ use crate::domain::{ClipboardImage, History, HistoryItem};
 use crate::storage;
 use std::io;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct ClipboardHistoryApp {
@@ -64,6 +65,15 @@ impl ClipboardHistoryApp {
         let item = HistoryItem::image(&image_path, &image_path);
 
         self.add_item(item)
+    }
+
+    pub fn toggle_pin(&mut self, id: Uuid) -> io::Result<bool> {
+        let changed = self.history.toggle_pin(id);
+        if changed {
+            storage::save_history(&self.history_path, &self.history)?;
+        }
+
+        Ok(changed)
     }
 
     pub fn history(&self) -> &History {
@@ -156,6 +166,40 @@ mod tests {
         assert_eq!(loaded.items().len(), HISTORY_LIMIT);
         assert_eq!(loaded.items()[0].preview, "item 25");
         assert_eq!(loaded.items().last().unwrap().preview, "item 1");
+    }
+
+    #[test]
+    fn toggling_pin_persists_item_state() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let history_path = temp_dir.path().join("history.json");
+        let mut app = ClipboardHistoryApp::new_empty(&history_path);
+        app.add_item(text_item("pin me")).expect("add item");
+        let id = app.history().items()[0].id;
+
+        assert!(app.toggle_pin(id).expect("toggle pin"));
+
+        let loaded = storage::load_history(&history_path);
+        assert!(loaded.items()[0].pinned);
+    }
+
+    #[test]
+    fn pinned_items_survive_app_retention() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let history_path = temp_dir.path().join("history.json");
+        let mut app = ClipboardHistoryApp::new_empty(&history_path);
+
+        app.add_item(text_item("pinned")).expect("add pinned item");
+        let id = app.history().items()[0].id;
+        app.toggle_pin(id).expect("toggle pin");
+        for index in 0..HISTORY_LIMIT {
+            app.add_item(text_item(&format!("item {index}")))
+                .expect("add item");
+        }
+
+        let loaded = storage::load_history(&history_path);
+        assert_eq!(loaded.items().len(), HISTORY_LIMIT);
+        assert!(loaded.items().iter().any(|item| item.preview == "pinned"));
+        assert!(loaded.items().iter().all(|item| item.preview != "item 0"));
     }
 
     #[test]
