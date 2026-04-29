@@ -2,6 +2,19 @@
 
 Aplicação desktop para histórico da área de transferência no Linux, com foco inicial em Zorin OS 17.3.
 
+## Status
+
+MVP `v0.1.0` validado manualmente no Zorin OS com:
+
+- instalação local em `~/.local/bin/linuxclipboard`;
+- daemon residente com autostart de sessão;
+- atalho `Super+V`;
+- histórico de textos e imagens;
+- navegação por teclado e mouse;
+- colagem automática;
+- itens fixados com pin;
+- tema claro/escuro.
+
 ## Instalação Local
 
 O fluxo recomendado para uso diário é instalar o binário localmente, em vez de depender de `cargo run`:
