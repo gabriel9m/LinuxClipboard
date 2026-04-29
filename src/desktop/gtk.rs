@@ -483,25 +483,10 @@ fn image_row_content(item: &HistoryItem) -> gtk4::Box {
 
     if let ClipboardContent::Image { path } = &item.content {
         let picture = gtk4::Picture::for_filename(path);
-        picture.set_size_request(96, 72);
+        picture.set_size_request(128, 84);
         picture.set_keep_aspect_ratio(true);
         picture.set_can_shrink(true);
         row.append(&picture);
-
-        let label_text = {
-            let file_name = std::path::Path::new(&item.preview)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("imagem");
-            format!("Imagem\n{file_name}")
-        };
-        let label = gtk4::Label::builder()
-            .label(&label_text)
-            .xalign(0.0)
-            .wrap(true)
-            .ellipsize(gtk4::pango::EllipsizeMode::End)
-            .build();
-        row.append(&label);
     }
 
     row

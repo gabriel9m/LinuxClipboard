@@ -97,5 +97,5 @@ O domínio e a integração GTK suportam imagens no histórico:
 
 - quando o clipboard não contém texto, o app tenta ler uma textura GTK;
 - texturas copiadas são convertidas para PNG e persistidas em `~/.local/share/clipboard-history/images`;
-- itens de imagem aparecem no popup com uma miniatura;
+- itens de imagem aparecem no popup apenas como miniatura;
 - ao selecionar uma imagem, o app carrega o PNG salvo, coloca a textura no clipboard e tenta o auto-paste.
