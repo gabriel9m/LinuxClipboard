@@ -161,28 +161,60 @@ fn toggle_popup() {
     });
 }
 
-fn install_popup_css() {
+fn install_popup_css() -> Option<ThemeCssRuntime> {
     let Some(display) = gdk::Display::default() else {
         log_error("popup css: no default display available");
-        return;
+        return None;
     };
-    let use_dark_palette = prefers_dark_palette(&display);
-    debug_log(&format!(
-        "popup css: installing {} palette",
-        if use_dark_palette { "dark" } else { "light" }
-    ));
-
+    let settings = gtk4::Settings::for_display(&display);
     let provider = gtk4::CssProvider::new();
-    provider.load_from_data(if use_dark_palette {
-        dark_popup_css()
-    } else {
-        light_popup_css()
-    });
+    apply_popup_css(&display, &provider);
+
     gtk4::style_context_add_provider_for_display(
         &display,
         &provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+
+    let display_for_theme = display.clone();
+    let provider_for_theme = provider.clone();
+    settings.connect_gtk_theme_name_notify(move |_| {
+        apply_popup_css(&display_for_theme, &provider_for_theme);
+    });
+
+    let display_for_dark_preference = display.clone();
+    let provider_for_dark_preference = provider.clone();
+    settings.connect_gtk_application_prefer_dark_theme_notify(move |_| {
+        apply_popup_css(&display_for_dark_preference, &provider_for_dark_preference);
+    });
+
+    let gsettings = Some(gtk4::gio::Settings::new("org.gnome.desktop.interface"));
+    if let Some(gsettings) = &gsettings {
+        let display_for_color_scheme = display.clone();
+        let provider_for_color_scheme = provider.clone();
+        gsettings.connect_changed(Some("color-scheme"), move |_, _| {
+            apply_popup_css(&display_for_color_scheme, &provider_for_color_scheme);
+        });
+    }
+
+    Some(ThemeCssRuntime {
+        _provider: provider,
+        _gsettings: gsettings,
+    })
+}
+
+fn apply_popup_css(display: &gdk::Display, provider: &gtk4::CssProvider) {
+    let use_dark_palette = prefers_dark_palette(&display);
+    debug_log(&format!(
+        "popup css: applying {} palette",
+        if use_dark_palette { "dark" } else { "light" }
+    ));
+
+    provider.load_from_data(if use_dark_palette {
+        dark_popup_css()
+    } else {
+        light_popup_css()
+    });
 }
 
 fn prefers_dark_palette(display: &gdk::Display) -> bool {
@@ -309,11 +341,15 @@ fn dark_popup_css() -> &'static str {
         button.clipboard-pin-button {
             min-width: 38px;
             padding: 0 10px;
-            color: alpha(#f8f8f2, 0.54);
         }
 
-        button.clipboard-pin-button.clipboard-pin-active {
-            color: #ffb86c;
+        button.clipboard-pin-button image {
+            color: alpha(#f8f8f2, 0.30);
+            -gtk-icon-size: 16px;
+        }
+
+        button.clipboard-pin-button.clipboard-pin-active image {
+            color: #ff79c6;
         }
 
         .clipboard-text-preview {
@@ -417,11 +453,15 @@ fn light_popup_css() -> &'static str {
         button.clipboard-pin-button {
             min-width: 38px;
             padding: 0 10px;
-            color: alpha(#29475f, 0.44);
         }
 
-        button.clipboard-pin-button.clipboard-pin-active {
-            color: #31536e;
+        button.clipboard-pin-button image {
+            color: alpha(#29475f, 0.28);
+            -gtk-icon-size: 16px;
+        }
+
+        button.clipboard-pin-button.clipboard-pin-active image {
+            color: #1f6f9f;
         }
 
         .clipboard-text-preview {
@@ -451,6 +491,13 @@ struct GtkAppState {
 pub struct GtkPopup {
     window: gtk4::ApplicationWindow,
     view: GtkPopupView,
+    _theme_css: Option<ThemeCssRuntime>,
+}
+
+#[derive(Debug)]
+struct ThemeCssRuntime {
+    _provider: gtk4::CssProvider,
+    _gsettings: Option<gtk4::gio::Settings>,
 }
 
 impl GtkPopup {
@@ -461,7 +508,7 @@ impl GtkPopup {
         clipboard_controller: Rc<RefCell<ClipboardController>>,
     ) -> Self {
         debug_log(&format!("popup: constructing with {} item(s)", items.len()));
-        install_popup_css();
+        let theme_css = install_popup_css();
         let state = Rc::new(RefCell::new(PopupState::from_items(&items)));
         let items = Rc::new(RefCell::new(items));
         let selection_runtime = GtkSelectionRuntime::new(clipboard_controller)
@@ -626,7 +673,11 @@ impl GtkPopup {
             selection_runtime,
         };
 
-        Self { window, view }
+        Self {
+            window,
+            view,
+            _theme_css: theme_css,
+        }
     }
 
     pub fn show(&self) {
@@ -746,7 +797,7 @@ fn render_popup(
         content_button.add_css_class("clipboard-content-button");
 
         let pin_button = gtk4::Button::builder()
-            .label(if item.pinned { "📌" } else { "○" })
+            .icon_name("view-pin-symbolic")
             .tooltip_text(if item.pinned { "Desafixar" } else { "Fixar" })
             .build();
         pin_button.set_focusable(false);
