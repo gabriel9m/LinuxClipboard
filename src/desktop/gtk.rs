@@ -379,10 +379,13 @@ fn start_text_clipboard_monitor(
                 }
             };
 
-            match clipboard_controller
-                .borrow_mut()
-                .capture_external_snapshot(snapshot, &mut app.borrow_mut())
-            {
+            let capture_result = {
+                let mut app = app.borrow_mut();
+                let mut clipboard_controller = clipboard_controller.borrow_mut();
+                clipboard_controller.capture_external_snapshot(snapshot, &mut app)
+            };
+
+            match capture_result {
                 Ok(CaptureOutcome::Captured) => {
                     debug_log("clipboard monitor: text captured");
                     popup_view.refresh_from_history(app.borrow().history().items().to_vec());
