@@ -123,16 +123,19 @@ impl GtkPopup {
             .margin_end(12)
             .build();
 
-        render_popup(&list_box, &items.borrow(), &state.borrow());
-
         let window = gtk4::ApplicationWindow::builder()
             .application(app)
             .title("LinuxClipboard")
             .default_width(420)
             .default_height(260)
             .resizable(false)
+            .build();
+        let scroll = gtk4::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
             .child(&list_box)
             .build();
+        window.set_child(Some(&scroll));
 
         window.connect_show(|_| {
             debug_log("window: show signal");
@@ -175,17 +178,32 @@ impl GtkPopup {
                 debug_log(&format!("popup: handling command {command:?}"));
                 let action = state.borrow_mut().handle_command(command);
                 handle_popup_action(&window, action, &items.borrow(), selection_runtime.as_ref());
-                render_popup(&list_box, &items.borrow(), &state.borrow());
+                render_popup(
+                    &list_box,
+                    Rc::clone(&items),
+                    Rc::clone(&state),
+                    &window,
+                    selection_runtime.as_ref(),
+                );
 
                 gtk4::glib::Propagation::Stop
             });
         }
         window.add_controller(key_controller);
+        render_popup(
+            &list_box,
+            Rc::clone(&items),
+            Rc::clone(&state),
+            &window,
+            selection_runtime.as_ref(),
+        );
 
         let view = GtkPopupView {
             items,
             state,
             list_box,
+            window: window.clone(),
+            selection_runtime,
         };
 
         Self { window, view }
@@ -229,6 +247,8 @@ pub struct GtkPopupView {
     items: Rc<RefCell<Vec<HistoryItem>>>,
     state: Rc<RefCell<PopupState>>,
     list_box: gtk4::Box,
+    window: gtk4::ApplicationWindow,
+    selection_runtime: Option<Rc<RefCell<GtkSelectionRuntime>>>,
 }
 
 impl GtkPopupView {
@@ -236,16 +256,34 @@ impl GtkPopupView {
         debug_log(&format!("popup: refreshing with {} item(s)", items.len()));
         *self.items.borrow_mut() = items;
         *self.state.borrow_mut() = PopupState::from_items(&self.items.borrow());
-        render_popup(&self.list_box, &self.items.borrow(), &self.state.borrow());
+        render_popup(
+            &self.list_box,
+            Rc::clone(&self.items),
+            Rc::clone(&self.state),
+            &self.window,
+            self.selection_runtime.as_ref(),
+        );
     }
 }
 
-fn render_popup(container: &gtk4::Box, items: &[HistoryItem], state: &PopupState) {
+fn render_popup(
+    container: &gtk4::Box,
+    items: Rc<RefCell<Vec<HistoryItem>>>,
+    state: Rc<RefCell<PopupState>>,
+    window: &gtk4::ApplicationWindow,
+    selection_runtime: Option<&Rc<RefCell<GtkSelectionRuntime>>>,
+) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
     }
 
-    if let Some(message) = state.empty_message() {
+    debug_log(&format!(
+        "popup: rendering {} item(s), selected={:?}",
+        items.borrow().len(),
+        state.borrow().selected_index()
+    ));
+
+    if let Some(message) = state.borrow().empty_message() {
         container.append(
             &gtk4::Label::builder()
                 .label(message)
@@ -256,22 +294,44 @@ fn render_popup(container: &gtk4::Box, items: &[HistoryItem], state: &PopupState
         return;
     }
 
-    for (index, item) in items.iter().enumerate() {
-        let row = gtk4::Label::builder()
+    for (index, item) in items.borrow().iter().enumerate() {
+        let label = gtk4::Label::builder()
             .label(&item.preview)
             .xalign(0.0)
             .wrap(false)
+            .ellipsize(gtk4::pango::EllipsizeMode::End)
             .margin_top(6)
             .margin_bottom(6)
             .margin_start(8)
             .margin_end(8)
             .build();
+        let row = gtk4::Button::builder().child(&label).hexpand(true).build();
+        row.add_css_class("flat");
 
-        if state.selected_index() == Some(index) {
-            row.add_css_class("accent");
+        let is_selected = state.borrow().selected_index() == Some(index);
+        if is_selected {
+            row.add_css_class("suggested-action");
         }
 
+        let window = window.clone();
+        let items_for_click = Rc::clone(&items);
+        let state_for_click = Rc::clone(&state);
+        let selection_runtime = selection_runtime.cloned();
+        row.connect_clicked(move |_| {
+            debug_log(&format!("mouse: clicked row index={index}"));
+            let action = state_for_click.borrow_mut().click_item(index);
+            handle_popup_action(
+                &window,
+                action,
+                &items_for_click.borrow(),
+                selection_runtime.as_ref(),
+            );
+        });
+
         container.append(&row);
+        if is_selected {
+            row.grab_focus();
+        }
     }
 }
 
