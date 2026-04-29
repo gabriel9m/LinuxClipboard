@@ -22,7 +22,10 @@ thread_local! {
 
 pub fn run_application() {
     debug_log("run_application: starting GTK application");
-    let app = gtk4::Application::builder().application_id(APP_ID).build();
+    let app = gtk4::Application::builder()
+        .application_id(APP_ID)
+        .flags(gtk4::gio::ApplicationFlags::HANDLES_COMMAND_LINE)
+        .build();
 
     app.connect_shutdown(|_| {
         debug_log("application: shutdown");
@@ -33,57 +36,123 @@ pub fn run_application() {
 
     app.connect_activate(|app| {
         debug_log("application: activate");
-        let hold_guard = app.hold();
-        debug_log("application: hold acquired");
-        let desktop_paths = paths::default_paths();
-        debug_log(&format!(
-            "paths: history_path={} images_dir={}",
-            desktop_paths.history_path.display(),
-            desktop_paths.images_dir.display()
-        ));
-        let history_app = Rc::new(RefCell::new(ClipboardHistoryApp::load_with_paths(
-            &desktop_paths.history_path,
-            &desktop_paths.images_dir,
-        )));
-        debug_log(&format!(
-            "history: loaded {} item(s)",
-            history_app.borrow().history().items().len()
-        ));
-        let clipboard_controller = Rc::new(RefCell::new(ClipboardController::new()));
+        ensure_gtk_app_state(app);
+        show_popup();
+    });
 
-        let popup = GtkPopup::new(
-            app,
-            history_app.borrow().history().items().to_vec(),
-            Rc::clone(&clipboard_controller),
-        );
-        let popup_view = popup.view_handle();
-
-        if let Err(error) = start_text_clipboard_monitor(
-            Rc::clone(&history_app),
-            Rc::clone(&clipboard_controller),
-            popup_view,
-        ) {
-            log_error(&format!("clipboard monitor unavailable: {error}"));
+    app.connect_command_line(|app, command_line| {
+        let command = DesktopCommand::from_args(command_line.arguments());
+        debug_log(&format!("application: command-line {command:?}"));
+        ensure_gtk_app_state(app);
+        match command {
+            DesktopCommand::Daemon => {
+                debug_log("application: daemon command; keeping popup hidden");
+            }
+            DesktopCommand::ShowPopup => show_popup(),
+            DesktopCommand::TogglePopup => toggle_popup(),
+            DesktopCommand::Quit => {
+                debug_log("application: quit command");
+                app.quit();
+            }
         }
 
-        GTK_APP_STATE.with(|state| {
-            *state.borrow_mut() = Some(GtkAppState {
-                _popup: popup,
-                _hold_guard: hold_guard,
-            });
-        });
-        debug_log("popup: stored in thread-local state");
-        GTK_APP_STATE.with(|state| {
-            if let Some(state) = state.borrow().as_ref() {
-                state._popup.show();
-            } else {
-                log_error("popup: missing from thread-local state before show");
-            }
-        });
+        gtk4::glib::ExitCode::SUCCESS
     });
 
     let exit_code = app.run();
     debug_log(&format!("run_application: exited with {exit_code:?}"));
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopCommand {
+    Daemon,
+    ShowPopup,
+    TogglePopup,
+    Quit,
+}
+
+impl DesktopCommand {
+    fn from_args(args: Vec<std::ffi::OsString>) -> Self {
+        if args.iter().skip(1).any(|arg| arg == "--quit") {
+            Self::Quit
+        } else if args.iter().skip(1).any(|arg| arg == "--toggle-popup") {
+            Self::TogglePopup
+        } else if args.iter().skip(1).any(|arg| arg == "--show-popup") {
+            Self::ShowPopup
+        } else {
+            Self::Daemon
+        }
+    }
+}
+
+fn ensure_gtk_app_state(app: &gtk4::Application) {
+    let already_initialized = GTK_APP_STATE.with(|state| state.borrow().is_some());
+    if already_initialized {
+        debug_log("application: state already initialized");
+        return;
+    }
+
+    debug_log("application: initializing resident state");
+    let hold_guard = app.hold();
+    debug_log("application: hold acquired");
+    let desktop_paths = paths::default_paths();
+    debug_log(&format!(
+        "paths: history_path={} images_dir={}",
+        desktop_paths.history_path.display(),
+        desktop_paths.images_dir.display()
+    ));
+    let history_app = Rc::new(RefCell::new(ClipboardHistoryApp::load_with_paths(
+        &desktop_paths.history_path,
+        &desktop_paths.images_dir,
+    )));
+    debug_log(&format!(
+        "history: loaded {} item(s)",
+        history_app.borrow().history().items().len()
+    ));
+    let clipboard_controller = Rc::new(RefCell::new(ClipboardController::new()));
+
+    let popup = GtkPopup::new(
+        app,
+        history_app.borrow().history().items().to_vec(),
+        Rc::clone(&clipboard_controller),
+    );
+    let popup_view = popup.view_handle();
+
+    if let Err(error) = start_text_clipboard_monitor(
+        Rc::clone(&history_app),
+        Rc::clone(&clipboard_controller),
+        popup_view,
+    ) {
+        log_error(&format!("clipboard monitor unavailable: {error}"));
+    }
+
+    GTK_APP_STATE.with(|state| {
+        *state.borrow_mut() = Some(GtkAppState {
+            _popup: popup,
+            _hold_guard: hold_guard,
+        });
+    });
+    debug_log("popup: stored in thread-local state");
+}
+
+fn show_popup() {
+    GTK_APP_STATE.with(|state| {
+        if let Some(state) = state.borrow().as_ref() {
+            state._popup.show();
+        } else {
+            log_error("popup: missing from thread-local state before show");
+        }
+    });
+}
+
+fn toggle_popup() {
+    GTK_APP_STATE.with(|state| {
+        if let Some(state) = state.borrow().as_ref() {
+            state._popup.toggle();
+        } else {
+            log_error("popup: missing from thread-local state before toggle");
+        }
+    });
 }
 
 #[derive(Debug)]
@@ -143,12 +212,11 @@ impl GtkPopup {
         window.connect_hide(|_| {
             debug_log("window: hide signal");
         });
-        let app_for_close = app.clone();
-        window.connect_close_request(move |_| {
+        window.connect_close_request(move |window| {
             debug_log("window: close-request signal");
-            debug_log("application: quit after close-request");
-            app_for_close.quit();
-            gtk4::glib::Propagation::Proceed
+            debug_log("popup: hiding after close-request");
+            window.hide();
+            gtk4::glib::Propagation::Stop
         });
         schedule_window_diagnostics(&window);
 
@@ -216,6 +284,19 @@ impl GtkPopup {
     pub fn show(&self) {
         debug_log("popup: present requested");
         self.window.present();
+    }
+
+    pub fn hide(&self) {
+        debug_log("popup: hide requested");
+        self.window.hide();
+    }
+
+    pub fn toggle(&self) {
+        if self.window.is_visible() {
+            self.hide();
+        } else {
+            self.show();
+        }
     }
 
     pub fn view_handle(&self) -> GtkPopupView {
@@ -534,6 +615,48 @@ fn debug_log(message: &str) {
         .open(DEBUG_LOG_PATH)
     {
         let _ = writeln!(file, "[{timestamp:.3}] {message}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn parses_no_arguments_as_daemon_command() {
+        assert_eq!(
+            DesktopCommand::from_args(args(&["clipboard-history"])),
+            DesktopCommand::Daemon
+        );
+    }
+
+    #[test]
+    fn parses_show_popup_command() {
+        assert_eq!(
+            DesktopCommand::from_args(args(&["clipboard-history", "--show-popup"])),
+            DesktopCommand::ShowPopup
+        );
+    }
+
+    #[test]
+    fn parses_toggle_popup_command() {
+        assert_eq!(
+            DesktopCommand::from_args(args(&["clipboard-history", "--toggle-popup"])),
+            DesktopCommand::TogglePopup
+        );
+    }
+
+    #[test]
+    fn parses_quit_command_with_priority() {
+        assert_eq!(
+            DesktopCommand::from_args(args(&["clipboard-history", "--toggle-popup", "--quit"])),
+            DesktopCommand::Quit
+        );
     }
 }
 
