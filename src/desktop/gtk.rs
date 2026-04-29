@@ -387,17 +387,11 @@ fn render_popup(
     }
 
     for (index, item) in items.borrow().iter().enumerate() {
-        let label = gtk4::Label::builder()
-            .label(item_preview_label(item))
-            .xalign(0.0)
-            .wrap(false)
-            .ellipsize(gtk4::pango::EllipsizeMode::End)
-            .margin_top(6)
-            .margin_bottom(6)
-            .margin_start(8)
-            .margin_end(8)
+        let content = row_content_for_item(item);
+        let row = gtk4::Button::builder()
+            .child(&content)
+            .hexpand(true)
             .build();
-        let row = gtk4::Button::builder().child(&label).hexpand(true).build();
         row.add_css_class("flat");
 
         let is_selected = state.borrow().selected_index() == Some(index);
@@ -460,17 +454,57 @@ fn scroll_selected_row_into_view(
     });
 }
 
-fn item_preview_label(item: &HistoryItem) -> String {
+fn row_content_for_item(item: &HistoryItem) -> gtk4::Widget {
     match item.kind {
-        ClipboardKind::Text => item.preview.clone(),
-        ClipboardKind::Image => {
+        ClipboardKind::Text => gtk4::Label::builder()
+            .label(&item.preview)
+            .xalign(0.0)
+            .wrap(false)
+            .ellipsize(gtk4::pango::EllipsizeMode::End)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(8)
+            .margin_end(8)
+            .build()
+            .upcast(),
+        ClipboardKind::Image => image_row_content(item).upcast(),
+    }
+}
+
+fn image_row_content(item: &HistoryItem) -> gtk4::Box {
+    let row = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(10)
+        .margin_top(6)
+        .margin_bottom(6)
+        .margin_start(8)
+        .margin_end(8)
+        .build();
+
+    if let ClipboardContent::Image { path } = &item.content {
+        let picture = gtk4::Picture::for_filename(path);
+        picture.set_size_request(96, 72);
+        picture.set_keep_aspect_ratio(true);
+        picture.set_can_shrink(true);
+        row.append(&picture);
+
+        let label_text = {
             let file_name = std::path::Path::new(&item.preview)
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("imagem");
-            format!("[Imagem] {file_name}")
-        }
+            format!("Imagem\n{file_name}")
+        };
+        let label = gtk4::Label::builder()
+            .label(&label_text)
+            .xalign(0.0)
+            .wrap(true)
+            .ellipsize(gtk4::pango::EllipsizeMode::End)
+            .build();
+        row.append(&label);
     }
+
+    row
 }
 
 fn handle_popup_action(
