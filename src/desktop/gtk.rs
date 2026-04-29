@@ -11,7 +11,7 @@ use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_ID: &str = "io.github.gabriel9m.LinuxClipboard";
 const DEBUG_LOG_PATH: &str = "clipboard-history-debug.log";
@@ -66,13 +66,19 @@ pub fn run_application() {
             log_error(&format!("clipboard monitor unavailable: {error}"));
         }
 
-        debug_log("popup: stored in holder");
-        popup.show();
         GTK_APP_STATE.with(|state| {
             *state.borrow_mut() = Some(GtkAppState {
                 _popup: popup,
                 _hold_guard: hold_guard,
             });
+        });
+        debug_log("popup: stored in thread-local state");
+        GTK_APP_STATE.with(|state| {
+            if let Some(state) = state.borrow().as_ref() {
+                state._popup.show();
+            } else {
+                log_error("popup: missing from thread-local state before show");
+            }
         });
     });
 
@@ -141,6 +147,7 @@ impl GtkPopup {
             app_for_close.quit();
             gtk4::glib::Propagation::Proceed
         });
+        schedule_window_diagnostics(&window);
 
         let key_controller = gtk4::EventControllerKey::new();
         {
@@ -192,6 +199,29 @@ impl GtkPopup {
     pub fn view_handle(&self) -> GtkPopupView {
         self.view.clone()
     }
+}
+
+fn schedule_window_diagnostics(window: &gtk4::ApplicationWindow) {
+    let window = window.clone();
+    let mut tick = 0;
+
+    gtk4::glib::timeout_add_local(Duration::from_millis(250), move || {
+        tick += 1;
+        debug_log(&format!(
+            "window diagnostic #{tick}: visible={} mapped={} active={} default_width={} default_height={}",
+            window.is_visible(),
+            window.is_mapped(),
+            window.is_active(),
+            window.default_width(),
+            window.default_height()
+        ));
+
+        if tick >= 16 {
+            gtk4::glib::ControlFlow::Break
+        } else {
+            gtk4::glib::ControlFlow::Continue
+        }
+    });
 }
 
 #[derive(Debug, Clone)]
