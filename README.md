@@ -99,3 +99,13 @@ O domínio e a integração GTK suportam imagens no histórico:
 - texturas copiadas são convertidas para PNG e persistidas em `~/.local/share/clipboard-history/images`;
 - itens de imagem aparecem no popup apenas como miniatura;
 - ao selecionar uma imagem, o app carrega o PNG salvo, coloca a textura no clipboard e tenta o auto-paste.
+
+### Interface
+
+O popup GTK usa CSS de aplicação com cores do tema ativo do Zorin/GNOME:
+
+- cabeçalho compacto com instrução de uso;
+- cantos arredondados e bordas discretas;
+- linhas com hover, foco e seleção visíveis;
+- miniaturas de imagem sem texto lateral;
+- suporte natural a tema claro/escuro via cores do tema GTK.

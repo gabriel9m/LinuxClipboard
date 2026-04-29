@@ -159,6 +159,106 @@ fn toggle_popup() {
     });
 }
 
+fn install_popup_css() {
+    let Some(display) = gdk::Display::default() else {
+        log_error("popup css: no default display available");
+        return;
+    };
+    let provider = gtk4::CssProvider::new();
+    provider.load_from_data(
+        r#"
+        window.clipboard-window {
+            background: transparent;
+        }
+
+        .clipboard-popup {
+            background: @theme_bg_color;
+            border: 1px solid alpha(@theme_fg_color, 0.10);
+            border-radius: 18px;
+            box-shadow: 0 12px 36px alpha(black, 0.24);
+            padding: 0;
+        }
+
+        .clipboard-header {
+            padding: 16px 18px 12px;
+            border-bottom: 1px solid alpha(@theme_fg_color, 0.08);
+            background: linear-gradient(
+                180deg,
+                alpha(@theme_fg_color, 0.045),
+                alpha(@theme_fg_color, 0.015)
+            );
+            border-top-left-radius: 18px;
+            border-top-right-radius: 18px;
+        }
+
+        .clipboard-title {
+            color: @theme_fg_color;
+            font-size: 17px;
+            font-weight: 700;
+        }
+
+        .clipboard-subtitle {
+            color: alpha(@theme_fg_color, 0.62);
+            font-size: 12px;
+        }
+
+        .clipboard-scroll {
+            background: transparent;
+            padding: 8px;
+        }
+
+        .clipboard-list {
+            background: transparent;
+        }
+
+        button.clipboard-row {
+            min-height: 42px;
+            padding: 0;
+            margin: 2px 4px;
+            border: 1px solid transparent;
+            border-radius: 14px;
+            background: transparent;
+            color: @theme_fg_color;
+            box-shadow: none;
+        }
+
+        button.clipboard-row:hover {
+            background: alpha(@theme_fg_color, 0.055);
+            border-color: alpha(@theme_fg_color, 0.08);
+        }
+
+        button.clipboard-row:focus {
+            outline: none;
+            box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.35);
+        }
+
+        button.clipboard-row.clipboard-row-selected {
+            background: alpha(@theme_selected_bg_color, 0.16);
+            border-color: alpha(@theme_selected_bg_color, 0.40);
+        }
+
+        .clipboard-text-preview {
+            padding: 11px 12px;
+            font-size: 14px;
+        }
+
+        .clipboard-image-row {
+            padding: 8px;
+        }
+
+        .clipboard-thumbnail {
+            background: alpha(@theme_fg_color, 0.04);
+            border-radius: 12px;
+        }
+        "#,
+    );
+    gtk4::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
 #[derive(Debug)]
 struct GtkAppState {
     _popup: GtkPopup,
@@ -178,6 +278,7 @@ impl GtkPopup {
         clipboard_controller: Rc<RefCell<ClipboardController>>,
     ) -> Self {
         debug_log(&format!("popup: constructing with {} item(s)", items.len()));
+        install_popup_css();
         let state = Rc::new(RefCell::new(PopupState::from_items(&items)));
         let items = Rc::new(RefCell::new(items));
         let selection_runtime = GtkSelectionRuntime::new(clipboard_controller)
@@ -189,26 +290,51 @@ impl GtkPopup {
             .ok();
         let list_box = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
-            .spacing(8)
-            .margin_top(12)
-            .margin_bottom(12)
-            .margin_start(12)
-            .margin_end(12)
+            .spacing(6)
             .build();
+        list_box.add_css_class("clipboard-list");
+
+        let header = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Vertical)
+            .spacing(2)
+            .build();
+        header.add_css_class("clipboard-header");
+        let title = gtk4::Label::builder()
+            .label("Área de transferência")
+            .xalign(0.0)
+            .build();
+        title.add_css_class("clipboard-title");
+        header.append(&title);
+        let subtitle = gtk4::Label::builder()
+            .label("Use ↑ ↓, Enter ou clique para colar")
+            .xalign(0.0)
+            .build();
+        subtitle.add_css_class("clipboard-subtitle");
+        header.append(&subtitle);
+
+        let root = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Vertical)
+            .spacing(0)
+            .build();
+        root.add_css_class("clipboard-popup");
+        root.append(&header);
 
         let window = gtk4::ApplicationWindow::builder()
             .application(app)
             .title("LinuxClipboard")
-            .default_width(420)
-            .default_height(260)
+            .default_width(460)
+            .default_height(420)
             .resizable(false)
             .build();
+        window.add_css_class("clipboard-window");
         let scroll = gtk4::ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
             .child(&list_box)
             .build();
-        window.set_child(Some(&scroll));
+        scroll.add_css_class("clipboard-scroll");
+        root.append(&scroll);
+        window.set_child(Some(&root));
 
         window.connect_show(|_| {
             debug_log("window: show signal");
@@ -393,10 +519,11 @@ fn render_popup(
             .hexpand(true)
             .build();
         row.add_css_class("flat");
+        row.add_css_class("clipboard-row");
 
         let is_selected = state.borrow().selected_index() == Some(index);
         if is_selected {
-            row.add_css_class("suggested-action");
+            row.add_css_class("clipboard-row-selected");
         }
 
         let window = window.clone();
@@ -456,17 +583,16 @@ fn scroll_selected_row_into_view(
 
 fn row_content_for_item(item: &HistoryItem) -> gtk4::Widget {
     match item.kind {
-        ClipboardKind::Text => gtk4::Label::builder()
-            .label(&item.preview)
-            .xalign(0.0)
-            .wrap(false)
-            .ellipsize(gtk4::pango::EllipsizeMode::End)
-            .margin_top(6)
-            .margin_bottom(6)
-            .margin_start(8)
-            .margin_end(8)
-            .build()
-            .upcast(),
+        ClipboardKind::Text => {
+            let label = gtk4::Label::builder()
+                .label(&item.preview)
+                .xalign(0.0)
+                .wrap(false)
+                .ellipsize(gtk4::pango::EllipsizeMode::End)
+                .build();
+            label.add_css_class("clipboard-text-preview");
+            label.upcast()
+        }
         ClipboardKind::Image => image_row_content(item).upcast(),
     }
 }
@@ -474,18 +600,16 @@ fn row_content_for_item(item: &HistoryItem) -> gtk4::Widget {
 fn image_row_content(item: &HistoryItem) -> gtk4::Box {
     let row = gtk4::Box::builder()
         .orientation(gtk4::Orientation::Horizontal)
-        .spacing(10)
-        .margin_top(6)
-        .margin_bottom(6)
-        .margin_start(8)
-        .margin_end(8)
+        .spacing(0)
         .build();
+    row.add_css_class("clipboard-image-row");
 
     if let ClipboardContent::Image { path } = &item.content {
         let picture = gtk4::Picture::for_filename(path);
-        picture.set_size_request(128, 84);
+        picture.set_size_request(136, 90);
         picture.set_keep_aspect_ratio(true);
         picture.set_can_shrink(true);
+        picture.add_css_class("clipboard-thumbnail");
         row.append(&picture);
     }
 
