@@ -315,6 +315,7 @@ impl GtkPopup {
         let root = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
             .spacing(0)
+            .vexpand(true)
             .build();
         root.add_css_class("clipboard-popup");
         root.append(&header);
@@ -330,6 +331,8 @@ impl GtkPopup {
         let scroll = gtk4::ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .min_content_height(300)
+            .vexpand(true)
             .child(&list_box)
             .build();
         scroll.add_css_class("clipboard-scroll");
@@ -351,6 +354,7 @@ impl GtkPopup {
         schedule_window_diagnostics(&window);
 
         let key_controller = gtk4::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
         {
             let state = Rc::clone(&state);
             let items = Rc::clone(&items);
@@ -360,7 +364,6 @@ impl GtkPopup {
             let selection_runtime = selection_runtime.clone();
 
             key_controller.connect_key_pressed(move |_, key, _, _| {
-                debug_log(&format!("keyboard: key pressed {key:?}"));
                 let command = match key {
                     gdk::Key::Up => Some(PopupCommand::MoveUp),
                     gdk::Key::Down => Some(PopupCommand::MoveDown),
@@ -374,17 +377,16 @@ impl GtkPopup {
                     return gtk4::glib::Propagation::Proceed;
                 };
 
-                debug_log(&format!("popup: handling command {command:?}"));
+                let is_navigation =
+                    matches!(command, PopupCommand::MoveUp | PopupCommand::MoveDown);
+                if !is_navigation {
+                    debug_log(&format!("popup: handling command {command:?}"));
+                }
                 let action = state.borrow_mut().handle_command(command);
                 handle_popup_action(&window, action, &items.borrow(), selection_runtime.as_ref());
-                render_popup(
-                    &list_box,
-                    &scroll,
-                    Rc::clone(&items),
-                    Rc::clone(&state),
-                    &window,
-                    selection_runtime.as_ref(),
-                );
+                if is_navigation {
+                    update_selected_row(&list_box, &scroll, state.borrow().selected_index());
+                }
 
                 gtk4::glib::Propagation::Stop
             });
@@ -512,6 +514,8 @@ fn render_popup(
         return;
     }
 
+    let mut selected_row = None;
+
     for (index, item) in items.borrow().iter().enumerate() {
         let content = row_content_for_item(item);
         let row = gtk4::Button::builder()
@@ -543,40 +547,86 @@ fn render_popup(
 
         container.append(&row);
         if is_selected {
-            row.grab_focus();
+            selected_row = Some(row.clone().upcast::<gtk4::Widget>());
         }
     }
 
     scroll_selected_row_into_view(
         scroll,
+        container,
+        selected_row,
         state.borrow().selected_index(),
-        items.borrow().len(),
     );
+}
+
+fn update_selected_row(
+    container: &gtk4::Box,
+    scroll: &gtk4::ScrolledWindow,
+    selected_index: Option<usize>,
+) {
+    let mut selected_row = None;
+    let mut index = 0;
+    let mut child = container.first_child();
+
+    while let Some(widget) = child {
+        if Some(index) == selected_index {
+            widget.add_css_class("clipboard-row-selected");
+            selected_row = Some(widget.clone());
+        } else {
+            widget.remove_css_class("clipboard-row-selected");
+        }
+
+        child = widget.next_sibling();
+        index += 1;
+    }
+
+    scroll_selected_row_into_view(scroll, container, selected_row, selected_index);
 }
 
 fn scroll_selected_row_into_view(
     scroll: &gtk4::ScrolledWindow,
+    container: &gtk4::Box,
+    selected_row: Option<gtk4::Widget>,
     selected_index: Option<usize>,
-    item_count: usize,
 ) {
-    let Some(selected_index) = selected_index else {
+    let Some(selected_row) = selected_row else {
         return;
     };
     let adjustment = scroll.vadjustment();
+    let container = container.clone();
 
     gtk4::glib::idle_add_local_once(move || {
         let upper = adjustment.upper();
         let page_size = adjustment.page_size();
-        if item_count <= 1 || upper <= page_size {
+        if upper <= page_size {
             return;
         }
 
+        if selected_index == Some(0) {
+            adjustment.set_value(0.0);
+            return;
+        }
+
+        let Some(bounds) = selected_row.compute_bounds(&container) else {
+            log_error("popup scroll: selected row bounds unavailable");
+            return;
+        };
+
+        let row_top = bounds.y() as f64;
+        let row_bottom = row_top + bounds.height() as f64;
+        let visible_top = adjustment.value();
+        let visible_bottom = visible_top + page_size;
         let max_value = upper - page_size;
-        let last_index = item_count.saturating_sub(1).max(1) as f64;
-        let target = (selected_index as f64 / last_index) * max_value;
-        debug_log(&format!(
-            "popup: scroll selected index={selected_index} target={target:.2}"
-        ));
+
+        let target = if row_top < visible_top {
+            row_top
+        } else if row_bottom > visible_bottom {
+            row_bottom - page_size
+        } else {
+            visible_top
+        }
+        .clamp(0.0, max_value);
+
         adjustment.set_value(target);
     });
 }
