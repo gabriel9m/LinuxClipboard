@@ -52,3 +52,25 @@ cargo run --features desktop-gtk -- --quit
 ```
 
 No Wayland, o atalho global `Super+V` deve ser configurado no ambiente desktop para executar o comando `--toggle-popup`.
+
+No Zorin OS, crie um atalho personalizado em Configurações > Teclado > Atalhos personalizados:
+
+Nome:
+
+```text
+LinuxClipboard
+```
+
+Comando:
+
+```bash
+bash -lc 'cd /home/gabriel/projetos/clipboard-history && cargo run --features desktop-gtk -- --toggle-popup'
+```
+
+Atalho:
+
+```text
+Super+V
+```
+
+Esse fluxo foi validado no ambiente de desenvolvimento: o daemon fica residente, e `Super+V` alterna a visibilidade do popup.
