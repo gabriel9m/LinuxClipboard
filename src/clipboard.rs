@@ -1,5 +1,7 @@
 use crate::app::ClipboardHistoryApp;
-use crate::domain::{ClipboardContent, ClipboardImage, HistoryItem};
+use crate::domain::{ClipboardContent, ClipboardImage, HistoryItem, normalize_text};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io;
 
 pub trait ClipboardPort {
@@ -17,6 +19,7 @@ pub enum ClipboardSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureOutcome {
     Captured,
+    IgnoredDuplicate,
     IgnoredSelfUpdate,
     IgnoredUnsupported,
     IgnoredInvalidText,
@@ -25,6 +28,7 @@ pub enum CaptureOutcome {
 #[derive(Debug, Default)]
 pub struct ClipboardController {
     ignore_next_update: bool,
+    last_external_capture: Option<ClipboardFingerprint>,
 }
 
 impl ClipboardController {
@@ -58,6 +62,11 @@ impl ClipboardController {
         snapshot: ClipboardSnapshot,
         app: &mut ClipboardHistoryApp,
     ) -> io::Result<CaptureOutcome> {
+        let fingerprint = ClipboardFingerprint::from_snapshot(&snapshot);
+        if fingerprint.is_some() && fingerprint == self.last_external_capture {
+            return Ok(CaptureOutcome::IgnoredDuplicate);
+        }
+
         match snapshot {
             ClipboardSnapshot::Text(text) => {
                 let Some(item) = HistoryItem::text(text) else {
@@ -65,10 +74,12 @@ impl ClipboardController {
                 };
 
                 app.add_item(item)?;
+                self.last_external_capture = fingerprint;
                 Ok(CaptureOutcome::Captured)
             }
             ClipboardSnapshot::Image(image) => {
                 app.add_image(&image)?;
+                self.last_external_capture = fingerprint;
                 Ok(CaptureOutcome::Captured)
             }
             ClipboardSnapshot::Unsupported => Ok(CaptureOutcome::IgnoredUnsupported),
@@ -99,6 +110,34 @@ impl ClipboardController {
 
     pub fn will_ignore_next_update(&self) -> bool {
         self.ignore_next_update
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClipboardFingerprint {
+    Text(String),
+    Image {
+        hash: u64,
+        len: usize,
+        extension: &'static str,
+    },
+}
+
+impl ClipboardFingerprint {
+    fn from_snapshot(snapshot: &ClipboardSnapshot) -> Option<Self> {
+        match snapshot {
+            ClipboardSnapshot::Text(text) => normalize_text(text.clone()).map(Self::Text),
+            ClipboardSnapshot::Image(image) => {
+                let mut hasher = DefaultHasher::new();
+                image.bytes().hash(&mut hasher);
+                Some(Self::Image {
+                    hash: hasher.finish(),
+                    len: image.bytes().len(),
+                    extension: image.extension().as_str(),
+                })
+            }
+            ClipboardSnapshot::Unsupported => None,
+        }
     }
 }
 
@@ -210,6 +249,60 @@ mod tests {
         assert!(path.starts_with(temp_dir.path().join("images")));
         assert_eq!(path.extension().unwrap(), "png");
         assert_eq!(std::fs::read(path).expect("read image"), image.bytes());
+    }
+
+    #[test]
+    fn ignores_duplicate_consecutive_text_snapshots() {
+        let (_temp_dir, mut app) = app_in_temp_dir();
+        let mut controller = ClipboardController::new();
+
+        let first = controller
+            .capture_external_snapshot(ClipboardSnapshot::Text("D2C4B4".to_string()), &mut app)
+            .expect("capture first text");
+        let duplicate = controller
+            .capture_external_snapshot(ClipboardSnapshot::Text("D2C4B4".to_string()), &mut app)
+            .expect("capture duplicate text");
+
+        assert_eq!(first, CaptureOutcome::Captured);
+        assert_eq!(duplicate, CaptureOutcome::IgnoredDuplicate);
+        assert_eq!(app.history().items().len(), 1);
+        assert_eq!(app.history().items()[0].preview, "D2C4B4");
+    }
+
+    #[test]
+    fn captures_different_consecutive_text_snapshots() {
+        let (_temp_dir, mut app) = app_in_temp_dir();
+        let mut controller = ClipboardController::new();
+
+        controller
+            .capture_external_snapshot(ClipboardSnapshot::Text("D2C4B4".to_string()), &mut app)
+            .expect("capture first text");
+        let outcome = controller
+            .capture_external_snapshot(ClipboardSnapshot::Text("F3E3D0".to_string()), &mut app)
+            .expect("capture second text");
+
+        assert_eq!(outcome, CaptureOutcome::Captured);
+        assert_eq!(app.history().items().len(), 2);
+        assert_eq!(app.history().items()[0].preview, "F3E3D0");
+        assert_eq!(app.history().items()[1].preview, "D2C4B4");
+    }
+
+    #[test]
+    fn ignores_duplicate_consecutive_image_snapshots() {
+        let (_temp_dir, mut app) = app_in_temp_dir();
+        let image = ClipboardImage::new([1, 2, 3], ImageFileExtension::Png).expect("valid image");
+        let mut controller = ClipboardController::new();
+
+        let first = controller
+            .capture_external_snapshot(ClipboardSnapshot::Image(image.clone()), &mut app)
+            .expect("capture first image");
+        let duplicate = controller
+            .capture_external_snapshot(ClipboardSnapshot::Image(image), &mut app)
+            .expect("capture duplicate image");
+
+        assert_eq!(first, CaptureOutcome::Captured);
+        assert_eq!(duplicate, CaptureOutcome::IgnoredDuplicate);
+        assert_eq!(app.history().items().len(), 1);
     }
 
     #[test]

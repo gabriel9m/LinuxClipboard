@@ -19,6 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_ID: &str = "io.github.gabriel9m.LinuxClipboard";
 const DEBUG_LOG_PATH: &str = "clipboard-history-debug.log";
+const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(650);
 
 thread_local! {
     static GTK_APP_STATE: RefCell<Option<GtkAppState>> = const { RefCell::new(None) };
@@ -164,41 +165,99 @@ fn install_popup_css() {
         log_error("popup css: no default display available");
         return;
     };
+    let use_dark_palette = prefers_dark_palette(&display);
+    debug_log(&format!(
+        "popup css: installing {} palette",
+        if use_dark_palette { "dark" } else { "light" }
+    ));
+
     let provider = gtk4::CssProvider::new();
-    provider.load_from_data(
-        r#"
+    provider.load_from_data(if use_dark_palette {
+        dark_popup_css()
+    } else {
+        light_popup_css()
+    });
+    gtk4::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
+fn prefers_dark_palette(display: &gdk::Display) -> bool {
+    let settings = gtk4::Settings::for_display(display);
+
+    if let Some(theme_name) = settings.gtk_theme_name() {
+        let theme_name = theme_name.to_ascii_lowercase();
+        debug_log(&format!("popup css: gtk theme={theme_name}"));
+        if theme_name.contains("light") {
+            return false;
+        }
+        if theme_name.contains("dark") {
+            return true;
+        }
+    }
+
+    if let Some(color_scheme) = gnome_color_scheme() {
+        debug_log(&format!("popup css: gnome color-scheme={color_scheme}"));
+        if color_scheme.contains("prefer-light") {
+            return false;
+        }
+        if color_scheme.contains("prefer-dark") {
+            return true;
+        }
+    }
+
+    settings.is_gtk_application_prefer_dark_theme()
+}
+
+fn gnome_color_scheme() -> Option<String> {
+    let output = Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn dark_popup_css() -> &'static str {
+    r#"
         window.clipboard-window {
             background: transparent;
         }
 
         .clipboard-popup {
-            background: @theme_bg_color;
-            border: 1px solid alpha(@theme_fg_color, 0.10);
+            background: #282a36;
+            border: 1px solid alpha(#f8f8f2, 0.12);
             border-radius: 18px;
-            box-shadow: 0 12px 36px alpha(black, 0.24);
+            box-shadow: 0 12px 34px alpha(black, 0.40);
             padding: 0;
         }
 
         .clipboard-header {
-            padding: 16px 18px 12px;
-            border-bottom: 1px solid alpha(@theme_fg_color, 0.08);
+            padding: 18px 18px 12px;
+            border-bottom: 1px solid alpha(#f8f8f2, 0.10);
             background: linear-gradient(
                 180deg,
-                alpha(@theme_fg_color, 0.045),
-                alpha(@theme_fg_color, 0.015)
+                alpha(#bd93f9, 0.16),
+                alpha(#44475a, 0.55)
             );
             border-top-left-radius: 18px;
             border-top-right-radius: 18px;
         }
 
         .clipboard-title {
-            color: @theme_fg_color;
+            color: #f8f8f2;
             font-size: 17px;
             font-weight: 700;
         }
 
         .clipboard-subtitle {
-            color: alpha(@theme_fg_color, 0.62);
+            color: alpha(#f8f8f2, 0.68);
             font-size: 12px;
         }
 
@@ -218,26 +277,27 @@ fn install_popup_css() {
             border: 1px solid transparent;
             border-radius: 14px;
             background: transparent;
-            color: @theme_fg_color;
+            color: #f8f8f2;
             box-shadow: none;
         }
 
         button.clipboard-row:hover {
-            background: alpha(@theme_fg_color, 0.055);
-            border-color: alpha(@theme_fg_color, 0.08);
+            background: alpha(#44475a, 0.76);
+            border-color: alpha(#f8f8f2, 0.10);
         }
 
         button.clipboard-row:focus {
             outline: none;
-            box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.35);
+            box-shadow: 0 0 0 2px alpha(#bd93f9, 0.52);
         }
 
         button.clipboard-row.clipboard-row-selected {
-            background: alpha(@theme_selected_bg_color, 0.16);
-            border-color: alpha(@theme_selected_bg_color, 0.40);
+            background: alpha(#bd93f9, 0.20);
+            border-color: alpha(#bd93f9, 0.58);
         }
 
         .clipboard-text-preview {
+            color: #f8f8f2;
             padding: 11px 12px;
             font-size: 14px;
         }
@@ -247,16 +307,99 @@ fn install_popup_css() {
         }
 
         .clipboard-thumbnail {
-            background: alpha(@theme_fg_color, 0.04);
+            background: alpha(#f8f8f2, 0.06);
             border-radius: 12px;
         }
-        "#,
-    );
-    gtk4::style_context_add_provider_for_display(
-        &display,
-        &provider,
-        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+        "#
+}
+
+fn light_popup_css() -> &'static str {
+    r#"
+        window.clipboard-window {
+            background: transparent;
+        }
+
+        .clipboard-popup {
+            background: #eef7fb;
+            border: 1px solid alpha(#81a6c6, 0.46);
+            border-radius: 18px;
+            box-shadow: 0 12px 30px alpha(#31536e, 0.18);
+            padding: 0;
+        }
+
+        .clipboard-header {
+            padding: 18px 18px 12px;
+            border-bottom: 1px solid alpha(#81a6c6, 0.34);
+            background: linear-gradient(
+                180deg,
+                alpha(#aacddc, 0.72),
+                alpha(#aacddc, 0.28)
+            );
+            border-top-left-radius: 18px;
+            border-top-right-radius: 18px;
+        }
+
+        .clipboard-title {
+            color: #29475f;
+            font-size: 17px;
+            font-weight: 700;
+        }
+
+        .clipboard-subtitle {
+            color: alpha(#29475f, 0.66);
+            font-size: 12px;
+        }
+
+        .clipboard-scroll {
+            background: transparent;
+            padding: 8px;
+        }
+
+        .clipboard-list {
+            background: transparent;
+        }
+
+        button.clipboard-row {
+            min-height: 42px;
+            padding: 0;
+            margin: 2px 4px;
+            border: 1px solid transparent;
+            border-radius: 14px;
+            background: transparent;
+            color: #29475f;
+            box-shadow: none;
+        }
+
+        button.clipboard-row:hover {
+            background: alpha(#aacddc, 0.32);
+            border-color: alpha(#81a6c6, 0.26);
+        }
+
+        button.clipboard-row:focus {
+            outline: none;
+            box-shadow: 0 0 0 2px alpha(#81a6c6, 0.40);
+        }
+
+        button.clipboard-row.clipboard-row-selected {
+            background: alpha(#81a6c6, 0.26);
+            border-color: alpha(#81a6c6, 0.60);
+        }
+
+        .clipboard-text-preview {
+            color: #29475f;
+            padding: 11px 12px;
+            font-size: 14px;
+        }
+
+        .clipboard-image-row {
+            padding: 8px;
+        }
+
+        .clipboard-thumbnail {
+            background: alpha(#aacddc, 0.22);
+            border-radius: 12px;
+        }
+        "#
 }
 
 #[derive(Debug)]
@@ -325,9 +468,40 @@ impl GtkPopup {
             .title("LinuxClipboard")
             .default_width(460)
             .default_height(420)
+            .decorated(false)
             .resizable(false)
             .build();
         window.add_css_class("clipboard-window");
+
+        let drag_controller = gtk4::GestureClick::new();
+        drag_controller.set_button(1);
+        {
+            let window = window.clone();
+            drag_controller.connect_pressed(move |gesture, _, x, y| {
+                let Some(device) = gesture.current_event_device() else {
+                    log_error("window drag ignored: missing input device");
+                    return;
+                };
+                let Some(surface) = window.surface() else {
+                    log_error("window drag ignored: missing window surface");
+                    return;
+                };
+                let Ok(toplevel) = surface.downcast::<gdk::Toplevel>() else {
+                    log_error("window drag ignored: surface is not a toplevel");
+                    return;
+                };
+
+                toplevel.begin_move(
+                    &device,
+                    gesture.current_button() as i32,
+                    x,
+                    y,
+                    gesture.current_event_time(),
+                );
+            });
+        }
+        header.add_controller(drag_controller);
+
         let scroll = gtk4::ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
@@ -755,7 +929,17 @@ fn start_text_clipboard_monitor(
         io::Error::new(io::ErrorKind::NotFound, "no default GDK display available")
     })?;
     let clipboard = display.clipboard();
+    let poll_state = Rc::new(RefCell::new(ClipboardPollState::default()));
 
+    start_clipboard_polling(
+        clipboard.clone(),
+        Rc::clone(&app),
+        Rc::clone(&clipboard_controller),
+        popup_view.clone(),
+        Rc::clone(&poll_state),
+    );
+
+    let poll_state_for_signal = Rc::clone(&poll_state);
     clipboard.connect_changed(move |clipboard| {
         debug_log("clipboard monitor: changed signal");
         if clipboard_controller.borrow_mut().consume_self_update() {
@@ -767,9 +951,11 @@ fn start_text_clipboard_monitor(
         let clipboard_controller = Rc::clone(&clipboard_controller);
         let popup_view = popup_view.clone();
         let clipboard_for_texture = clipboard.clone();
+        let poll_state = Rc::clone(&poll_state_for_signal);
         clipboard.read_text_async(None::<&gtk4::gio::Cancellable>, move |result| {
             match result {
                 Ok(Some(text)) => {
+                    poll_state.borrow_mut().last_text = Some(text.to_string());
                     capture_clipboard_snapshot(
                         ClipboardSnapshot::Text(text.to_string()),
                         &app,
@@ -803,6 +989,71 @@ fn start_text_clipboard_monitor(
 
     debug_log("clipboard monitor: connected");
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct ClipboardPollState {
+    in_flight: bool,
+    last_text: Option<String>,
+}
+
+fn start_clipboard_polling(
+    clipboard: gdk::Clipboard,
+    app: Rc<RefCell<ClipboardHistoryApp>>,
+    clipboard_controller: Rc<RefCell<ClipboardController>>,
+    popup_view: GtkPopupView,
+    poll_state: Rc<RefCell<ClipboardPollState>>,
+) {
+    debug_log("clipboard poll: starting");
+    gtk4::glib::timeout_add_local(CLIPBOARD_POLL_INTERVAL, move || {
+        if poll_state.borrow().in_flight {
+            return gtk4::glib::ControlFlow::Continue;
+        }
+
+        poll_state.borrow_mut().in_flight = true;
+        let app = Rc::clone(&app);
+        let clipboard_controller = Rc::clone(&clipboard_controller);
+        let popup_view = popup_view.clone();
+        let poll_state = Rc::clone(&poll_state);
+
+        clipboard.read_text_async(None::<&gtk4::gio::Cancellable>, move |result| {
+            let maybe_text = match result {
+                Ok(Some(text)) => Some(text.to_string()),
+                Ok(None) => None,
+                Err(error) => {
+                    debug_log(&format!("clipboard poll: text unavailable ({error})"));
+                    None
+                }
+            };
+
+            if let Some(text) = maybe_text {
+                let should_capture = {
+                    let mut poll_state = poll_state.borrow_mut();
+                    poll_state.in_flight = false;
+                    if poll_state.last_text.as_deref() == Some(text.as_str()) {
+                        false
+                    } else {
+                        poll_state.last_text = Some(text.clone());
+                        true
+                    }
+                };
+
+                if should_capture {
+                    debug_log("clipboard poll: detected text change");
+                    capture_clipboard_snapshot(
+                        ClipboardSnapshot::Text(text),
+                        &app,
+                        &clipboard_controller,
+                        &popup_view,
+                    );
+                }
+            } else {
+                poll_state.borrow_mut().in_flight = false;
+            }
+        });
+
+        gtk4::glib::ControlFlow::Continue
+    });
 }
 
 fn read_clipboard_texture(
