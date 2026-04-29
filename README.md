@@ -2,6 +2,98 @@
 
 Aplicação desktop para histórico da área de transferência no Linux, com foco inicial em Zorin OS 17.3.
 
+## Instalação Local
+
+O fluxo recomendado para uso diário é instalar o binário localmente, em vez de depender de `cargo run`:
+
+```bash
+./scripts/install-local.sh
+```
+
+Esse script:
+
+- compila o app em modo `release` com a feature GTK;
+- instala o executável em `~/.local/bin/linuxclipboard`;
+- cria o autostart em `~/.config/autostart/linuxclipboard.desktop`;
+- mostra o comando correto para configurar o atalho `Super+V`.
+
+Depois da instalação, inicie ou reinicie o daemon:
+
+```bash
+~/.local/bin/linuxclipboard --quit || true
+setsid ~/.local/bin/linuxclipboard >/tmp/linuxclipboard.log 2>&1 < /dev/null &
+```
+
+Para remover a instalação local:
+
+```bash
+./scripts/uninstall-local.sh
+```
+
+O histórico fica em:
+
+```text
+~/.local/share/clipboard-history/history.json
+```
+
+As imagens ficam em:
+
+```text
+~/.local/share/clipboard-history/images
+```
+
+## Uso Diário
+
+O comando padrão inicia o daemon oculto, mantendo o monitor do clipboard ativo:
+
+```bash
+linuxclipboard
+```
+
+Para mostrar ou esconder o popup da instância residente:
+
+```bash
+linuxclipboard --toggle-popup
+```
+
+Para abrir diretamente sem alternar:
+
+```bash
+linuxclipboard --show-popup
+```
+
+Para encerrar a instância residente:
+
+```bash
+linuxclipboard --quit
+```
+
+No Zorin OS, crie um atalho personalizado em Configurações > Teclado > Atalhos personalizados:
+
+Nome:
+
+```text
+LinuxClipboard
+```
+
+Comando:
+
+```bash
+/home/gabriel/.local/bin/linuxclipboard --toggle-popup
+```
+
+Atalho:
+
+```text
+Super+V
+```
+
+Se `~/.local/bin` estiver no `PATH`, o comando também pode ser:
+
+```bash
+linuxclipboard --toggle-popup
+```
+
 ## Desenvolvimento
 
 ### Testes padrão
@@ -25,9 +117,9 @@ cargo run --features desktop-gtk
 
 No Zorin OS 17.3, `libgtk-4-dev` fornece as bibliotecas nativas usadas pelo crate `gtk4`.
 
-### Execução residente
+### Execução residente em desenvolvimento
 
-O comando padrão inicia o daemon oculto, mantendo o monitor do clipboard ativo:
+Durante desenvolvimento, ainda é possível rodar sem instalar:
 
 ```bash
 cargo run --features desktop-gtk
@@ -51,29 +143,7 @@ Para encerrar a instância residente:
 cargo run --features desktop-gtk -- --quit
 ```
 
-No Wayland, o atalho global `Super+V` deve ser configurado no ambiente desktop para executar o comando `--toggle-popup`.
-
-No Zorin OS, crie um atalho personalizado em Configurações > Teclado > Atalhos personalizados:
-
-Nome:
-
-```text
-LinuxClipboard
-```
-
-Comando:
-
-```bash
-bash -lc 'cd /home/gabriel/projetos/clipboard-history && cargo run --features desktop-gtk -- --toggle-popup'
-```
-
-Atalho:
-
-```text
-Super+V
-```
-
-Esse fluxo foi validado no ambiente de desenvolvimento: o daemon fica residente, e `Super+V` alterna a visibilidade do popup.
+No Wayland, o atalho global `Super+V` deve ser configurado no ambiente desktop para executar o comando `--toggle-popup`. Para uso diário, prefira o binário instalado em `~/.local/bin/linuxclipboard`.
 
 ### Auto-paste
 
