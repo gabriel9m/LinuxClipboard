@@ -10,7 +10,9 @@ use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
+use std::process::{Command, Stdio};
 use std::rc::Rc;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_ID: &str = "io.github.gabriel9m.LinuxClipboard";
@@ -592,10 +594,108 @@ struct GtkPastePort;
 
 impl PastePort for GtkPastePort {
     fn try_paste(&mut self) -> io::Result<bool> {
-        // Automatic paste depends on compositor/session support and will be
-        // wired separately. Returning false preserves the manual paste fallback.
-        Ok(false)
+        let Some(backend) = AutoPasteBackend::detect() else {
+            debug_log("auto-paste: no supported keyboard automation command found");
+            return Ok(false);
+        };
+
+        debug_log(&format!("auto-paste: scheduling {backend:?}"));
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(180));
+            if let Err(error) = backend.run() {
+                log_error(&format!("auto-paste failed: {error}"));
+            }
+        });
+
+        Ok(true)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoPasteBackend {
+    Ydotool,
+    Wtype,
+    Xdotool,
+}
+
+impl AutoPasteBackend {
+    fn detect() -> Option<Self> {
+        let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+        Self::detect_with(&session_type, command_exists)
+    }
+
+    fn detect_with(session_type: &str, command_exists: impl Fn(&str) -> bool) -> Option<Self> {
+        let is_wayland = session_type.eq_ignore_ascii_case("wayland");
+        let is_x11 = session_type.eq_ignore_ascii_case("x11");
+
+        if is_wayland {
+            if command_exists("ydotool") {
+                return Some(Self::Ydotool);
+            }
+            if command_exists("wtype") {
+                return Some(Self::Wtype);
+            }
+        }
+
+        if is_x11 && command_exists("xdotool") {
+            return Some(Self::Xdotool);
+        }
+
+        if command_exists("ydotool") {
+            Some(Self::Ydotool)
+        } else if command_exists("wtype") {
+            Some(Self::Wtype)
+        } else if command_exists("xdotool") {
+            Some(Self::Xdotool)
+        } else {
+            None
+        }
+    }
+
+    fn run(self) -> io::Result<()> {
+        let mut command = match self {
+            Self::Ydotool => {
+                let mut command = Command::new("ydotool");
+                command.args(["key", "29:1", "47:1", "47:0", "29:0"]);
+                command
+            }
+            Self::Wtype => {
+                let mut command = Command::new("wtype");
+                command.args(["-M", "ctrl", "-k", "v", "-m", "ctrl"]);
+                command
+            }
+            Self::Xdotool => {
+                let mut command = Command::new("xdotool");
+                command.args(["key", "--clearmodifiers", "ctrl+v"]);
+                command
+            }
+        };
+
+        let status = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if status.success() {
+            debug_log(&format!("auto-paste: {self:?} completed"));
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "{self:?} exited with status {status}"
+            )))
+        }
+    }
+}
+
+fn command_exists(command: &str) -> bool {
+    Command::new("sh")
+        .args(["-c", &format!("command -v {command}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn log_error(message: &str) {
@@ -657,6 +757,37 @@ mod tests {
             DesktopCommand::from_args(args(&["clipboard-history", "--toggle-popup", "--quit"])),
             DesktopCommand::Quit
         );
+    }
+
+    #[test]
+    fn detects_ydotool_first_on_wayland() {
+        let backend = AutoPasteBackend::detect_with("wayland", |command| {
+            matches!(command, "ydotool" | "xdotool")
+        });
+
+        assert_eq!(backend, Some(AutoPasteBackend::Ydotool));
+    }
+
+    #[test]
+    fn detects_wtype_on_wayland_when_ydotool_is_missing() {
+        let backend =
+            AutoPasteBackend::detect_with("wayland", |command| matches!(command, "wtype"));
+
+        assert_eq!(backend, Some(AutoPasteBackend::Wtype));
+    }
+
+    #[test]
+    fn detects_xdotool_first_on_x11() {
+        let backend = AutoPasteBackend::detect_with("x11", |command| command == "xdotool");
+
+        assert_eq!(backend, Some(AutoPasteBackend::Xdotool));
+    }
+
+    #[test]
+    fn returns_no_auto_paste_backend_when_no_command_exists() {
+        let backend = AutoPasteBackend::detect_with("wayland", |_| false);
+
+        assert_eq!(backend, None);
     }
 }
 

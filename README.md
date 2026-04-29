@@ -74,3 +74,13 @@ Super+V
 ```
 
 Esse fluxo foi validado no ambiente de desenvolvimento: o daemon fica residente, e `Super+V` alterna a visibilidade do popup.
+
+### Auto-paste
+
+Ao ativar um item com clique ou `Enter`, o app sempre escreve o conteúdo selecionado no clipboard. Em seguida, ele tenta colar automaticamente disparando `Ctrl+V` por uma ferramenta disponível no sistema:
+
+- Wayland: tenta `ydotool` primeiro e `wtype` depois.
+- X11: tenta `xdotool`.
+- Sem ferramenta compatível: mantém o fallback manual, ou seja, o item fica no clipboard e pode ser colado com `Ctrl+V`.
+
+No ambiente atual de desenvolvimento, a sessão é Wayland. Para auto-paste real no Wayland/GNOME, a opção mais provável é instalar e habilitar `ydotool`.
