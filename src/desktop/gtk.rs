@@ -1,7 +1,9 @@
 use crate::app::ClipboardHistoryApp;
 use crate::clipboard::{CaptureOutcome, ClipboardController, ClipboardPort, ClipboardSnapshot};
 use crate::desktop::paths;
-use crate::domain::{ClipboardContent, HistoryItem};
+use crate::domain::{
+    ClipboardContent, ClipboardImage, ClipboardKind, HistoryItem, ImageFileExtension,
+};
 use crate::paste::{PastePort, SelectionOutcome, SelectionSource};
 use crate::ui::{PopupAction, PopupCommand, PopupState};
 use gtk4::gdk;
@@ -386,7 +388,7 @@ fn render_popup(
 
     for (index, item) in items.borrow().iter().enumerate() {
         let label = gtk4::Label::builder()
-            .label(&item.preview)
+            .label(item_preview_label(item))
             .xalign(0.0)
             .wrap(false)
             .ellipsize(gtk4::pango::EllipsizeMode::End)
@@ -456,6 +458,19 @@ fn scroll_selected_row_into_view(
         ));
         adjustment.set_value(target);
     });
+}
+
+fn item_preview_label(item: &HistoryItem) -> String {
+    match item.kind {
+        ClipboardKind::Text => item.preview.clone(),
+        ClipboardKind::Image => {
+            let file_name = std::path::Path::new(&item.preview)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("imagem");
+            format!("[Imagem] {file_name}")
+        }
+    }
 }
 
 fn handle_popup_action(
@@ -558,35 +573,110 @@ fn start_text_clipboard_monitor(
         let app = Rc::clone(&app);
         let clipboard_controller = Rc::clone(&clipboard_controller);
         let popup_view = popup_view.clone();
+        let clipboard_for_texture = clipboard.clone();
         clipboard.read_text_async(None::<&gtk4::gio::Cancellable>, move |result| {
-            let snapshot = match result {
-                Ok(Some(text)) => ClipboardSnapshot::Text(text.to_string()),
-                Ok(None) => ClipboardSnapshot::Unsupported,
+            match result {
+                Ok(Some(text)) => {
+                    capture_clipboard_snapshot(
+                        ClipboardSnapshot::Text(text.to_string()),
+                        &app,
+                        &clipboard_controller,
+                        &popup_view,
+                    );
+                }
+                Ok(None) => {
+                    debug_log("clipboard monitor: no text; trying texture");
+                    read_clipboard_texture(
+                        clipboard_for_texture,
+                        app,
+                        clipboard_controller,
+                        popup_view,
+                    );
+                }
                 Err(error) => {
-                    log_error(&format!("clipboard text read failed: {error}"));
-                    ClipboardSnapshot::Unsupported
+                    debug_log(&format!(
+                        "clipboard monitor: text unavailable ({error}); trying texture"
+                    ));
+                    read_clipboard_texture(
+                        clipboard_for_texture,
+                        app,
+                        clipboard_controller,
+                        popup_view,
+                    );
                 }
             };
-
-            let capture_result = {
-                let mut app = app.borrow_mut();
-                let mut clipboard_controller = clipboard_controller.borrow_mut();
-                clipboard_controller.capture_external_snapshot(snapshot, &mut app)
-            };
-
-            match capture_result {
-                Ok(CaptureOutcome::Captured) => {
-                    debug_log("clipboard monitor: text captured");
-                    popup_view.refresh_from_history(app.borrow().history().items().to_vec());
-                }
-                Ok(outcome) => debug_log(&format!("clipboard capture ignored: {outcome:?}")),
-                Err(error) => log_error(&format!("clipboard capture failed: {error}")),
-            }
         });
     });
 
     debug_log("clipboard monitor: connected");
     Ok(())
+}
+
+fn read_clipboard_texture(
+    clipboard: gdk::Clipboard,
+    app: Rc<RefCell<ClipboardHistoryApp>>,
+    clipboard_controller: Rc<RefCell<ClipboardController>>,
+    popup_view: GtkPopupView,
+) {
+    clipboard.read_texture_async(None::<&gtk4::gio::Cancellable>, move |result| {
+        let snapshot = match result {
+            Ok(Some(texture)) => texture_to_png_image(&texture).map_or_else(
+                |error| {
+                    log_error(&format!("clipboard texture conversion failed: {error}"));
+                    ClipboardSnapshot::Unsupported
+                },
+                ClipboardSnapshot::Image,
+            ),
+            Ok(None) => ClipboardSnapshot::Unsupported,
+            Err(error) => {
+                debug_log(&format!("clipboard monitor: texture unavailable ({error})"));
+                ClipboardSnapshot::Unsupported
+            }
+        };
+
+        capture_clipboard_snapshot(snapshot, &app, &clipboard_controller, &popup_view);
+    });
+}
+
+fn texture_to_png_image(texture: &gdk::Texture) -> io::Result<ClipboardImage> {
+    let temp_path =
+        std::env::temp_dir().join(format!("clipboard-history-{}.png", uuid::Uuid::new_v4()));
+    texture.save_to_png(&temp_path).map_err(io::Error::other)?;
+    let bytes = std::fs::read(&temp_path);
+    let cleanup = std::fs::remove_file(&temp_path);
+
+    if let Err(error) = cleanup {
+        debug_log(&format!(
+            "clipboard texture temp cleanup failed: {} ({error})",
+            temp_path.display()
+        ));
+    }
+
+    let bytes = bytes?;
+    ClipboardImage::new(bytes, ImageFileExtension::Png)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty png texture"))
+}
+
+fn capture_clipboard_snapshot(
+    snapshot: ClipboardSnapshot,
+    app: &Rc<RefCell<ClipboardHistoryApp>>,
+    clipboard_controller: &Rc<RefCell<ClipboardController>>,
+    popup_view: &GtkPopupView,
+) {
+    let capture_result = {
+        let mut app = app.borrow_mut();
+        let mut clipboard_controller = clipboard_controller.borrow_mut();
+        clipboard_controller.capture_external_snapshot(snapshot, &mut app)
+    };
+
+    match capture_result {
+        Ok(CaptureOutcome::Captured) => {
+            debug_log("clipboard monitor: item captured");
+            popup_view.refresh_from_history(app.borrow().history().items().to_vec());
+        }
+        Ok(outcome) => debug_log(&format!("clipboard capture ignored: {outcome:?}")),
+        Err(error) => log_error(&format!("clipboard capture failed: {error}")),
+    }
 }
 
 #[derive(Debug)]
@@ -826,10 +916,12 @@ impl ClipboardPort for GdkClipboardPort {
                 self.clipboard.set_text(text);
                 Ok(())
             }
-            ClipboardContent::Image { .. } => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "GDK image clipboard writing is not wired yet",
-            )),
+            ClipboardContent::Image { path } => {
+                let file = gtk4::gio::File::for_path(path);
+                let texture = gdk::Texture::from_file(&file).map_err(io::Error::other)?;
+                self.clipboard.set_texture(&texture);
+                Ok(())
+            }
         }
     }
 }
