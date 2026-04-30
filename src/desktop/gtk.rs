@@ -9,17 +9,20 @@ use crate::ui::{PopupAction, PopupCommand, PopupState};
 use gtk4::gdk;
 use gtk4::prelude::*;
 use std::cell::RefCell;
+use std::fs;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_ID: &str = "io.github.gabriel9m.LinuxClipboard";
-const DEBUG_LOG_PATH: &str = "clipboard-history-debug.log";
 const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(650);
+const PRIVATE_DIR_MODE: u32 = 0o700;
+const PRIVATE_FILE_MODE: u32 = 0o600;
 
 thread_local! {
     static GTK_APP_STATE: RefCell<Option<GtkAppState>> = const { RefCell::new(None) };
@@ -55,6 +58,7 @@ pub fn run_application() {
             }
             DesktopCommand::ShowPopup => show_popup(),
             DesktopCommand::TogglePopup => toggle_popup(),
+            DesktopCommand::ClearHistory => clear_history(),
             DesktopCommand::Quit => {
                 debug_log("application: quit command");
                 app.quit();
@@ -73,6 +77,7 @@ enum DesktopCommand {
     Daemon,
     ShowPopup,
     TogglePopup,
+    ClearHistory,
     Quit,
 }
 
@@ -80,6 +85,8 @@ impl DesktopCommand {
     fn from_args(args: Vec<std::ffi::OsString>) -> Self {
         if args.iter().skip(1).any(|arg| arg == "--quit") {
             Self::Quit
+        } else if args.iter().skip(1).any(|arg| arg == "--clear-history") {
+            Self::ClearHistory
         } else if args.iter().skip(1).any(|arg| arg == "--toggle-popup") {
             Self::TogglePopup
         } else if args.iter().skip(1).any(|arg| arg == "--show-popup") {
@@ -157,6 +164,16 @@ fn toggle_popup() {
             state._popup.toggle();
         } else {
             log_error("popup: missing from thread-local state before toggle");
+        }
+    });
+}
+
+fn clear_history() {
+    GTK_APP_STATE.with(|state| {
+        if let Some(state) = state.borrow().as_ref() {
+            state._popup.view.clear_history();
+        } else {
+            log_error("popup: missing from thread-local state before clear-history");
         }
     });
 }
@@ -752,6 +769,15 @@ impl GtkPopupView {
             self.selection_runtime.as_ref(),
         );
     }
+
+    pub fn clear_history(&self) {
+        debug_log("popup: clear-history requested");
+        let clear_result = self.history_app.borrow_mut().clear_history();
+        match clear_result {
+            Ok(()) => self.refresh_from_history(Vec::new()),
+            Err(error) => log_error(&format!("clear-history failed: {error}")),
+        }
+    }
 }
 
 fn render_popup(
@@ -1295,6 +1321,11 @@ struct GtkPastePort;
 
 impl PastePort for GtkPastePort {
     fn try_paste(&mut self) -> io::Result<bool> {
+        if auto_paste_disabled() {
+            debug_log("auto-paste: disabled by environment");
+            return Ok(false);
+        }
+
         let Some(backend) = AutoPasteBackend::detect() else {
             debug_log("auto-paste: no supported keyboard automation command found");
             return Ok(false);
@@ -1312,6 +1343,17 @@ impl PastePort for GtkPastePort {
     }
 }
 
+fn auto_paste_disabled() -> bool {
+    std::env::var("LINUXCLIPBOARD_AUTO_PASTE")
+        .map(|value| is_auto_paste_disabled_value(&value))
+        .unwrap_or(false)
+}
+
+fn is_auto_paste_disabled_value(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    matches!(value.as_str(), "0" | "false" | "off" | "disabled")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutoPasteBackend {
     Ydotool,
@@ -1320,6 +1362,14 @@ enum AutoPasteBackend {
 }
 
 impl AutoPasteBackend {
+    fn command_path(self) -> &'static str {
+        match self {
+            Self::Ydotool => "/usr/bin/ydotool",
+            Self::Wtype => "/usr/bin/wtype",
+            Self::Xdotool => "/usr/bin/xdotool",
+        }
+    }
+
     fn detect() -> Option<Self> {
         let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
         Self::detect_with(&session_type, command_exists)
@@ -1330,23 +1380,23 @@ impl AutoPasteBackend {
         let is_x11 = session_type.eq_ignore_ascii_case("x11");
 
         if is_wayland {
-            if command_exists("ydotool") {
+            if command_exists(Self::Ydotool.command_path()) {
                 return Some(Self::Ydotool);
             }
-            if command_exists("wtype") {
+            if command_exists(Self::Wtype.command_path()) {
                 return Some(Self::Wtype);
             }
         }
 
-        if is_x11 && command_exists("xdotool") {
+        if is_x11 && command_exists(Self::Xdotool.command_path()) {
             return Some(Self::Xdotool);
         }
 
-        if command_exists("ydotool") {
+        if command_exists(Self::Ydotool.command_path()) {
             Some(Self::Ydotool)
-        } else if command_exists("wtype") {
+        } else if command_exists(Self::Wtype.command_path()) {
             Some(Self::Wtype)
-        } else if command_exists("xdotool") {
+        } else if command_exists(Self::Xdotool.command_path()) {
             Some(Self::Xdotool)
         } else {
             None
@@ -1356,17 +1406,17 @@ impl AutoPasteBackend {
     fn run(self) -> io::Result<()> {
         let mut command = match self {
             Self::Ydotool => {
-                let mut command = Command::new("ydotool");
+                let mut command = Command::new(self.command_path());
                 command.args(["key", "ctrl+v"]);
                 command
             }
             Self::Wtype => {
-                let mut command = Command::new("wtype");
+                let mut command = Command::new(self.command_path());
                 command.args(["-M", "ctrl", "-k", "v", "-m", "ctrl"]);
                 command
             }
             Self::Xdotool => {
-                let mut command = Command::new("xdotool");
+                let mut command = Command::new(self.command_path());
                 command.args(["key", "--clearmodifiers", "ctrl+v"]);
                 command
             }
@@ -1389,14 +1439,8 @@ impl AutoPasteBackend {
 }
 
 fn command_exists(command: &str) -> bool {
-    Command::new("sh")
-        .args(["-c", &format!("command -v {command}")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    let path = std::path::Path::new(command);
+    path.is_absolute() && path.is_file()
 }
 
 fn log_error(message: &str) {
@@ -1410,13 +1454,79 @@ fn debug_log(message: &str) {
         .map(|duration| duration.as_secs_f64())
         .unwrap_or_default();
 
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(DEBUG_LOG_PATH)
-    {
+    let Ok(log_path) = debug_log_path() else {
+        return;
+    };
+
+    if path_is_symlink(&log_path) {
+        return;
+    }
+
+    if let Ok(mut file) = private_append_options().open(&log_path) {
+        let _ = set_private_file_permissions(&log_path);
         let _ = writeln!(file, "[{timestamp:.3}] {message}");
     }
+}
+
+fn debug_log_path() -> io::Result<PathBuf> {
+    let state_home = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".local").join("state"))
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    let log_dir = state_home.join("clipboard-history");
+    fs::create_dir_all(&log_dir)?;
+    set_private_dir_permissions(&log_dir)?;
+    Ok(log_dir.join("debug.log"))
+}
+
+fn path_is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn private_append_options() -> OpenOptions {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options.create(true).append(true).mode(PRIVATE_FILE_MODE);
+    options
+}
+
+#[cfg(not(unix))]
+fn private_append_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    options
+}
+
+#[cfg(unix)]
+fn set_private_dir_permissions(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_DIR_MODE))
+}
+
+#[cfg(not(unix))]
+fn set_private_dir_permissions(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_FILE_MODE))
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1453,9 +1563,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_clear_history_command() {
+        assert_eq!(
+            DesktopCommand::from_args(args(&["clipboard-history", "--clear-history"])),
+            DesktopCommand::ClearHistory
+        );
+    }
+
+    #[test]
     fn parses_quit_command_with_priority() {
         assert_eq!(
-            DesktopCommand::from_args(args(&["clipboard-history", "--toggle-popup", "--quit"])),
+            DesktopCommand::from_args(args(&[
+                "clipboard-history",
+                "--clear-history",
+                "--toggle-popup",
+                "--quit",
+            ])),
             DesktopCommand::Quit
         );
     }
@@ -1463,7 +1586,7 @@ mod tests {
     #[test]
     fn detects_ydotool_first_on_wayland() {
         let backend = AutoPasteBackend::detect_with("wayland", |command| {
-            matches!(command, "ydotool" | "xdotool")
+            matches!(command, "/usr/bin/ydotool" | "/usr/bin/xdotool")
         });
 
         assert_eq!(backend, Some(AutoPasteBackend::Ydotool));
@@ -1472,14 +1595,14 @@ mod tests {
     #[test]
     fn detects_wtype_on_wayland_when_ydotool_is_missing() {
         let backend =
-            AutoPasteBackend::detect_with("wayland", |command| matches!(command, "wtype"));
+            AutoPasteBackend::detect_with("wayland", |command| matches!(command, "/usr/bin/wtype"));
 
         assert_eq!(backend, Some(AutoPasteBackend::Wtype));
     }
 
     #[test]
     fn detects_xdotool_first_on_x11() {
-        let backend = AutoPasteBackend::detect_with("x11", |command| command == "xdotool");
+        let backend = AutoPasteBackend::detect_with("x11", |command| command == "/usr/bin/xdotool");
 
         assert_eq!(backend, Some(AutoPasteBackend::Xdotool));
     }
@@ -1489,6 +1612,16 @@ mod tests {
         let backend = AutoPasteBackend::detect_with("wayland", |_| false);
 
         assert_eq!(backend, None);
+    }
+
+    #[test]
+    fn parses_auto_paste_disable_values() {
+        assert!(is_auto_paste_disabled_value("0"));
+        assert!(is_auto_paste_disabled_value("false"));
+        assert!(is_auto_paste_disabled_value("off"));
+        assert!(is_auto_paste_disabled_value("disabled"));
+        assert!(!is_auto_paste_disabled_value("1"));
+        assert!(!is_auto_paste_disabled_value("true"));
     }
 }
 

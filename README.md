@@ -43,6 +43,12 @@ Para remover a instalação local:
 ./scripts/uninstall-local.sh
 ```
 
+Por padrão, a desinstalação preserva histórico e imagens. Para remover também os dados persistidos:
+
+```bash
+./scripts/uninstall-local.sh --purge-data
+```
+
 O histórico fica em:
 
 ```text
@@ -79,6 +85,12 @@ Para encerrar a instância residente:
 
 ```bash
 linuxclipboard --quit
+```
+
+Para limpar histórico e imagens persistidas:
+
+```bash
+linuxclipboard --clear-history
 ```
 
 No Zorin OS, crie um atalho personalizado em Configurações > Teclado > Atalhos personalizados:
@@ -172,6 +184,12 @@ Na versão `ydotool 0.1.8`, o comando usado para simular `Ctrl+V` é:
 
 ```bash
 ydotool key ctrl+v
+```
+
+Para desativar auto-paste e usar apenas o fallback manual com `Ctrl+V`, inicie o daemon com:
+
+```bash
+LINUXCLIPBOARD_AUTO_PASTE=0 linuxclipboard
 ```
 
 ### Imagens

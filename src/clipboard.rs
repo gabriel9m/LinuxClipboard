@@ -1,5 +1,7 @@
 use crate::app::ClipboardHistoryApp;
-use crate::domain::{ClipboardContent, ClipboardImage, HistoryItem, normalize_text};
+use crate::domain::{
+    ClipboardContent, ClipboardImage, HistoryItem, looks_like_sensitive_text, normalize_text,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io;
@@ -23,6 +25,7 @@ pub enum CaptureOutcome {
     IgnoredSelfUpdate,
     IgnoredUnsupported,
     IgnoredInvalidText,
+    IgnoredSensitiveText,
 }
 
 #[derive(Debug, Default)]
@@ -69,6 +72,11 @@ impl ClipboardController {
 
         match snapshot {
             ClipboardSnapshot::Text(text) => {
+                if looks_like_sensitive_text(&text) {
+                    self.last_external_capture = fingerprint;
+                    return Ok(CaptureOutcome::IgnoredSensitiveText);
+                }
+
                 let Some(item) = HistoryItem::text(text) else {
                     return Ok(CaptureOutcome::IgnoredInvalidText);
                 };
@@ -353,6 +361,24 @@ mod tests {
             .expect("capture clipboard");
 
         assert_eq!(outcome, CaptureOutcome::IgnoredInvalidText);
+        assert!(app.history().is_empty());
+        assert!(!history_path.exists());
+    }
+
+    #[test]
+    fn ignores_sensitive_text_without_persisting() {
+        let (temp_dir, mut app) = app_in_temp_dir();
+        let history_path = temp_dir.path().join("history.json");
+        let clipboard = FakeClipboard::new(ClipboardSnapshot::Text(
+            "SECRET_TOKEN_TEST_123 password=super-secret".to_string(),
+        ));
+        let mut controller = ClipboardController::new();
+
+        let outcome = controller
+            .capture_current(&clipboard, &mut app)
+            .expect("capture clipboard");
+
+        assert_eq!(outcome, CaptureOutcome::IgnoredSensitiveText);
         assert!(app.history().is_empty());
         assert!(!history_path.exists());
     }

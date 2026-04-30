@@ -24,12 +24,20 @@ impl ClipboardHistoryApp {
         images_dir: impl Into<PathBuf>,
     ) -> Self {
         let history_path = history_path.into();
+        let images_dir = images_dir.into();
+        if let Some(data_dir) = history_path.parent() {
+            if let Err(error) =
+                storage::harden_storage_permissions(data_dir, &history_path, &images_dir)
+            {
+                eprintln!("failed to harden clipboard storage permissions: {error}");
+            }
+        }
         let history = storage::load_history(&history_path);
 
         Self {
             history,
             history_path,
-            images_dir: images_dir.into(),
+            images_dir,
         }
     }
 
@@ -54,7 +62,7 @@ impl ClipboardHistoryApp {
     pub fn add_item(&mut self, item: HistoryItem) -> io::Result<()> {
         let removed = self.history.push(item);
 
-        storage::cleanup_removed_image_files(&removed)?;
+        storage::cleanup_removed_image_files(&removed, &self.images_dir)?;
         storage::save_history(&self.history_path, &self.history)?;
 
         Ok(())
@@ -74,6 +82,12 @@ impl ClipboardHistoryApp {
         }
 
         Ok(changed)
+    }
+
+    pub fn clear_history(&mut self) -> io::Result<()> {
+        let removed = self.history.clear();
+        storage::cleanup_removed_image_files(&removed, &self.images_dir)?;
+        storage::save_history(&self.history_path, &self.history)
     }
 
     pub fn history(&self) -> &History {
@@ -206,8 +220,10 @@ mod tests {
     fn adding_item_cleans_removed_image_files_when_retention_discards_them() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let history_path = temp_dir.path().join("history.json");
-        let old_image_path = temp_dir.path().join("old-image.png");
-        let old_preview_path = temp_dir.path().join("old-image-thumb.png");
+        let images_dir = temp_dir.path().join("images");
+        fs::create_dir_all(&images_dir).expect("create images dir");
+        let old_image_path = images_dir.join("old-image.png");
+        let old_preview_path = images_dir.join("old-image-thumb.png");
         fs::write(&old_image_path, "old image").expect("write old image");
         fs::write(&old_preview_path, "old preview").expect("write old preview");
         let mut app = ClipboardHistoryApp::new_empty(&history_path);
@@ -255,5 +271,28 @@ mod tests {
         assert!(path.starts_with(&images_dir));
         assert_eq!(path.extension().unwrap(), "png");
         assert_eq!(fs::read(path).expect("read image"), image.bytes());
+    }
+
+    #[test]
+    fn clearing_history_removes_persisted_items_and_image_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let history_path = temp_dir.path().join("history.json");
+        let images_dir = temp_dir.path().join("controlled-images");
+        let image =
+            ClipboardImage::new([1, 2, 3, 4], ImageFileExtension::Png).expect("valid image");
+        let mut app = ClipboardHistoryApp::new_empty_with_paths(&history_path, &images_dir);
+        app.add_item(text_item("keep no more")).expect("add text");
+        app.add_image(&image).expect("add image");
+        let ClipboardContent::Image { path } = &app.history().items()[0].content else {
+            panic!("expected image item");
+        };
+        let image_path = path.clone();
+
+        app.clear_history().expect("clear history");
+
+        assert!(app.history().is_empty());
+        assert!(!image_path.exists());
+        let loaded = storage::load_history(&history_path);
+        assert!(loaded.is_empty());
     }
 }
