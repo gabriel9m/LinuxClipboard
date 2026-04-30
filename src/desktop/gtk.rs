@@ -20,7 +20,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_ID: &str = "io.github.gabriel9m.LinuxClipboard";
-const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(650);
+const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(180);
 const PRIVATE_DIR_MODE: u32 = 0o700;
 const PRIVATE_FILE_MODE: u32 = 0o600;
 
